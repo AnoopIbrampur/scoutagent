@@ -1,0 +1,7 @@
+/* Brighter system colors for dark backgrounds (Apple's dark-mode variants). */
+:root {
+  --sa-accent: #0A84FF;
+  --sa-green: #30D158;
+  --sa-orange: #FF9F0A;
+  --sa-red: #FF453A;
+}

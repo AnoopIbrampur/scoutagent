@@ -1,0 +1,27 @@
+# Apple system colors for each appearance. Using [theme.light] / [theme.dark] (and no
+# top-level [theme] colors) keeps Streamlit following the OS light/dark setting.
+[theme.light]
+primaryColor = "#007AFF"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F2F7"
+textColor = "#1D1D1F"
+blueColor = "#007AFF"
+greenColor = "#34C759"
+orangeColor = "#FF9500"
+redColor = "#FF3B30"
+
+[theme.dark]
+primaryColor = "#0A84FF"
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#1C1C1E"
+textColor = "#F5F5F7"
+blueColor = "#0A84FF"
+greenColor = "#30D158"
+orangeColor = "#FF9F0A"
+redColor = "#FF453A"
+
+[client]
+toolbarMode = "minimal"
+
+[server]
+headless = true

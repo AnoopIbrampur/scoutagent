@@ -103,7 +103,7 @@ All constants live in `scout/config.py` (`SCORING_CONFIG`, `POSITION_WEIGHTS`) a
 5. **Underrated (0–100)** = `(Translation − Attention + 100) / 2`. 50 means fairly rated.
 6. **Ranking gate.** When sorting by Underrated, only players with Translation ≥ 50 rank.
    Without it, ordinary players ranked high just for being unknown: 5 of 10 planted
-   "volume decoys" reached the top 50. The UI says how many players are hidden and has a toggle to show them.
+   "volume decoys" reached the top 50. The UI says how many players are hidden, and the Options menu can show them.
 7. **Explanations.** The top 3 factors are ranked by `weight × (percentile − 50)`. The top
    concern is the weakest stat, including turnover rate.
 
@@ -161,12 +161,36 @@ need a roster CSV (`scout/roster.py`):
    "n/a" instead of rewarding missing data.
 3. `python -m scripts.load_real_players --pdfs <folder> --roster data/roster.csv` validates
    everything (it names every blank cell), stores the players, and prints their rankings.
-4. `SCOUT_DATASET=real uvicorn api.main:app --port 8000`, and the UI shows a "Real players" banner.
+4. `SCOUT_DATASET=real uvicorn api.main:app --port 8000`, and the UI shows a "Real players" status pill.
 
 Percentiles need a D1 baseline, so real players are compared against the **synthetic D1 pool**
 until real D1 data is loaded. The UI, explanations and reports say so.
 - **Synergy ranks here** are percentiles across all 600 synthetic players, before any level
   adjustment, as in Synergy. Scoring uses its own level-adjusted D1 percentiles.
+
+## UI design
+
+The Streamlit UI (`ui/app.py`, styles in `ui/style.css`) follows Apple's interface principles:
+
+- **One clear path:** describe a player, scan the shortlist, read the player. The shortlist and
+  the player sit side by side, the top match opens automatically, and deeper material (Synergy
+  tables, the report) sits one level down behind a segmented control. The gate option lives in
+  an Options menu.
+- **Typography:** the system font (SF on Apple devices), tight tracking on large display text,
+  neutral tracking on body text, and tabular numbers so stats line up.
+- **Materials:** the search bar floats as a blurred, translucent layer that content scrolls
+  under. Cards are soft fills, not boxes.
+- **Feedback:** every control scales down slightly on press. Status shows as small capsules
+  colored by meaning (green fact-checked, orange concern, red unverified) instead of full-width
+  alerts.
+- **Light and dark:** Apple's system colors for both appearances via `[theme.light]` and
+  `[theme.dark]` in `.streamlit/config.toml`, so the app follows the OS setting. Surfaces are
+  derived from the text color, so they stay readable even if Streamlit's theme and the OS disagree.
+- **Adapts to width:** the list and player stack when there isn't room for both, and metric
+  tiles wrap instead of truncating.
+- **Accessibility:** `prefers-reduced-motion` (no press animation, opacity feedback instead),
+  `prefers-reduced-transparency` (solid bar, no blur), and `prefers-contrast: more` (stronger
+  borders and secondary text). 44pt minimum touch targets.
 
 ## Report fact-check
 
@@ -235,7 +259,7 @@ when another player's was 0.69). Those sentences are now regression tests in `te
 **Cut first if time is short**
 1. The FastAPI layer. Streamlit can import `scout` directly, which saves roughly an hour of
    plumbing and one process to keep alive.
-2. Skill-emphasis re-ranking and the "include gated" toggle.
+2. Skill-emphasis re-ranking and the "include gated" option.
 3. The LLM query parser. The keyword parser plus example buttons carries a demo.
 
 Never cut the **template report fallback** or the **report cache**. They're what keep a live demo alive.

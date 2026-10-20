@@ -1,0 +1,197 @@
+/* ScoutAgent UI, styled after Apple's interface guidelines.
+ *
+ * Principles applied (see the apple-design notes in the README):
+ *   - System font; tracking and leading change with size (tight display, neutral body).
+ *   - Hierarchy from weight + size + spacing, not decoration.
+ *   - Translucent material for the floating search bar; content scrolls under it.
+ *   - Instant press feedback on every control.
+ *   - Neutrals derived from currentColor so light and dark mode both work.
+ *   - Reduced motion / transparency / higher contrast are honored.
+ */
+
+:root {
+  --sa-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --sa-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, "Segoe UI", Roboto, sans-serif;
+  --sa-accent: #007AFF;
+  --sa-green: #34C759;
+  --sa-orange: #FF9500;
+  --sa-red: #FF3B30;
+  /* Material = heavy blur of whatever is underneath + a faint tint from the text color,
+     so it is correct on light AND dark pages without knowing which one is showing. */
+  --sa-material: color-mix(in srgb, currentColor 4%, transparent);
+  --sa-fill: color-mix(in srgb, currentColor 5%, transparent);
+  --sa-fill-strong: color-mix(in srgb, currentColor 8%, transparent);
+  --sa-hairline: color-mix(in srgb, currentColor 12%, transparent);
+  --sa-secondary: color-mix(in srgb, currentColor 62%, transparent);
+  --sa-radius-lg: 20px;
+  --sa-radius: 14px;
+  --sa-radius-sm: 10px;
+}
+/* Dark-mode colors live in style-dark.css. app.py applies them when Streamlit's ACTIVE
+   theme is dark (st.context.theme), not when the OS is: the two can disagree if someone
+   picks a theme in Streamlit's settings, and mismatched colors make text unreadable. */
+
+/* ---------------------------------------------------------------- type */
+html, body, .stApp, .stMarkdown, p, li, label, input, textarea, button, [data-testid="stMetric"] {
+  font-family: var(--sa-font);
+}
+.stApp { -webkit-font-smoothing: antialiased; }
+/* Streamlit styles h1-h6 with its own font; display text uses the system display face. */
+.stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 { font-family: var(--sa-display) !important; }
+.stMarkdown p, .stMarkdown li { line-height: 1.5; letter-spacing: 0; }
+[data-testid="stCaptionContainer"], .stCaption, small {
+  font-size: 0.8125rem; letter-spacing: 0.01em; color: var(--sa-secondary);
+}
+
+.sa-overline {
+  font: 600 0.8125rem/1.2 var(--sa-font); letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--sa-accent); margin: 0 0 6px;
+}
+.sa-display {
+  font: 700 clamp(2rem, 4.2vw, 3rem)/1.05 var(--sa-display); letter-spacing: -0.025em; margin: 0;
+}
+.sa-lede { font-size: 1.0625rem; line-height: 1.45; color: var(--sa-secondary); margin: 10px 0 0; max-width: 46ch; }
+.sa-title { font: 650 1.75rem/1.15 var(--sa-display); letter-spacing: -0.02em; margin: 0; }
+.sa-section { font: 600 1.0625rem/1.3 var(--sa-font); letter-spacing: -0.01em; margin: 4px 0 8px; }
+.sa-meta { font-size: 0.9375rem; color: var(--sa-secondary); margin: 6px 0 0; }
+
+/* Numbers line up in columns. */
+[data-testid="stMetricValue"], .sa-num { font-variant-numeric: tabular-nums; }
+
+/* Hide Streamlit's anchor-link icons on headings: chrome without purpose. */
+[data-testid="stHeaderActionElements"] { display: none; }
+
+/* ---------------------------------------------------------------- floating search bar (material) */
+.st-key-searchbar {
+  position: sticky; top: 3.75rem; z-index: 50;
+  background: var(--sa-material);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border-radius: var(--sa-radius-lg);
+  padding: 14px 16px 10px;
+  margin: 8px -16px 0;
+  box-shadow: 0 1px 0 var(--sa-hairline), 0 8px 24px rgba(0, 0, 0, 0.06);
+}
+header[data-testid="stHeader"] {
+  background: var(--sa-material);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+}
+
+/* Search field: a single, generous, rounded field. */
+.st-key-searchbar [data-testid="stTextInput"] input {
+  font-size: 1.0625rem; padding: 12px 14px; letter-spacing: -0.005em;
+}
+.st-key-searchbar [data-baseweb="input"], .st-key-searchbar [data-baseweb="base-input"] {
+  border-radius: var(--sa-radius); background: var(--sa-fill-strong); border-color: transparent;
+}
+
+/* ---------------------------------------------------------------- controls: instant press feedback */
+.stButton button, .stFormSubmitButton button, [data-testid="stPopover"] button,
+button[data-variant="pills"], button[data-variant="segmented_control"] {
+  transition: transform 100ms ease-out, background-color 120ms ease-out;
+  will-change: transform;
+}
+.stButton button:active, .stFormSubmitButton button:active, [data-testid="stPopover"] button:active,
+button[data-variant="pills"]:active, button[data-variant="segmented_control"]:active {
+  transform: scale(0.97);
+}
+.stButton button, .stFormSubmitButton button, [data-testid="stPopover"] > div > button {
+  border-radius: var(--sa-radius); font-weight: 590; letter-spacing: -0.005em; min-height: 44px; /* 44pt touch target */
+}
+.stFormSubmitButton button { height: 100%; }
+
+/* Example pills: capsules. */
+button[data-variant="pills"] {
+  border-radius: 999px !important; background: var(--sa-fill); border: none !important; font-size: 0.875rem;
+}
+
+/* Segmented control: one filled track, the selected segment raised (like UISegmentedControl). */
+[data-testid="stButtonGroup"]:has(button[data-variant="segmented_control"]) > div {
+  background: var(--sa-fill-strong); border-radius: var(--sa-radius-sm); padding: 2px; gap: 2px; width: fit-content;
+}
+button[data-variant="segmented_control"] {
+  border: none !important; border-radius: 8px !important; background: transparent !important;
+  min-height: 32px; font-size: 0.875rem; color: inherit !important; padding: 4px 14px;
+}
+button[data-variant="segmented_control"][aria-checked="true"] {
+  /* Tinted selection (theme-independent): accent text on an accent wash. */
+  background: color-mix(in srgb, var(--sa-accent) 16%, transparent) !important;
+  color: var(--sa-accent) !important; font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- surfaces */
+[data-testid="stMetric"] {
+  background: var(--sa-fill); border-radius: var(--sa-radius); padding: 12px 14px;
+}
+[data-testid="stMetricLabel"] p { font-size: 0.8125rem; color: var(--sa-secondary); letter-spacing: 0.01em; }
+[data-testid="stMetricValue"] { font-size: 1.625rem; font-weight: 600; letter-spacing: -0.02em; }
+
+.st-key-detail, .st-key-empty {
+  background: var(--sa-fill); border-radius: var(--sa-radius-lg); padding: 20px 20px 12px;
+}
+[data-testid="stDataFrame"] { border-radius: var(--sa-radius); overflow: hidden; }
+[data-testid="stAlert"] { border-radius: var(--sa-radius); }
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius: var(--sa-radius-lg); }
+
+/* Status capsules: small, colored by meaning, never shouting. */
+.sa-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; align-items: center; }
+.sa-chip {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px;
+  font-size: 0.8125rem; font-weight: 500; letter-spacing: 0.005em; background: var(--sa-fill-strong);
+}
+.sa-chip .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.sa-chip.accent { color: var(--sa-accent); background: color-mix(in srgb, var(--sa-accent) 12%, transparent); }
+.sa-chip.good { color: var(--sa-green); background: color-mix(in srgb, var(--sa-green) 14%, transparent); }
+.sa-chip.warn { color: var(--sa-orange); background: color-mix(in srgb, var(--sa-orange) 14%, transparent); }
+.sa-chip.bad { color: var(--sa-red); background: color-mix(in srgb, var(--sa-red) 14%, transparent); }
+.sa-label { font-size: 0.8125rem; color: var(--sa-secondary); margin-right: 2px; }
+
+/* "Why this ranking": grouped list rows with a hairline between them. */
+.sa-list { border-radius: var(--sa-radius); background: var(--sa-fill); overflow: hidden; }
+.sa-row { display: grid; grid-template-columns: 22px 1fr; gap: 10px; padding: 11px 14px; }
+.sa-row + .sa-row { border-top: 0.5px solid var(--sa-hairline); }
+.sa-row .icon { font-weight: 700; line-height: 1.35; text-align: center; }
+.sa-row .icon.plus { color: var(--sa-green); }
+.sa-row .icon.minus { color: var(--sa-orange); }
+.sa-row .what { font-weight: 590; line-height: 1.35; }
+.sa-row .detail { font-size: 0.875rem; color: var(--sa-secondary); line-height: 1.4; font-variant-numeric: tabular-nums; }
+
+/* Report: a readable measure and quiet section headers. */
+.st-key-report { max-width: 72ch; }
+.st-key-report h4 {
+  font: 600 0.8125rem/1.2 var(--sa-font); text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--sa-secondary); margin: 18px 0 6px; padding: 0;
+}
+.st-key-report p, .st-key-report li { font-size: 1rem; line-height: 1.55; }
+
+/* ---------------------------------------------------------------- accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  .stButton button:active, .stFormSubmitButton button:active,
+  button[data-variant="pills"]:active, button[data-variant="segmented_control"]:active {
+    transform: none; opacity: 0.7; /* still feedback, without motion */
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .st-key-searchbar, header[data-testid="stHeader"] {
+    -webkit-backdrop-filter: none; backdrop-filter: none; background: Canvas;
+  }
+}
+@media (prefers-contrast: more) {
+  :root {
+    --sa-hairline: color-mix(in srgb, currentColor 45%, transparent);
+    --sa-secondary: color-mix(in srgb, currentColor 85%, transparent);
+  }
+  .st-key-searchbar, .st-key-detail, .st-key-empty, [data-testid="stMetric"], .sa-list, .sa-chip {
+    border: 1px solid var(--sa-hairline);
+  }
+}
+
+/* ---------------------------------------------------------------- adaptive layout (flexibility)
+ * Streamlit only stacks columns on phones. Let rows wrap earlier instead of truncating:
+ * the shortlist/player split stacks below ~880px, metric tiles wrap below ~140px each. */
+[data-testid="stHorizontalBlock"]:has(.st-key-detail) { flex-wrap: wrap; row-gap: 24px; }
+[data-testid="stHorizontalBlock"]:has(.st-key-detail) > [data-testid="stColumn"] { flex: 1 1 420px; min-width: min(420px, 100%); }
+.st-key-detail [data-testid="stHorizontalBlock"] { flex-wrap: wrap; row-gap: 8px; }
+.st-key-detail [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex: 1 1 130px; min-width: 130px; }

@@ -15,25 +15,26 @@
 
 ## 0:15–1:15 · Live search (60s)
 
-1. Click **Try: D2 PG, passer, under 6'3"** (or type it, which looks more live).
-2. Point at the chip row: *"Here's how it understood me: Division D2, point guard, 6'2" or
-   shorter, emphasis on passing. Notice 'translate to D1' did **not** become a D1 filter."*
-3. Point at the caption: *"25 players match. 15 are hidden because their Translation Score is below
-   50. We don't let anyone rank high just for being unknown."*
-4. Point at the table: *"Translation asks whether his production would hold up at D1. Underrated is
-   Translation minus attention. Every row tells you its top reason."*
+1. Click the **D2 point guard, passer, under 6'3"** pill (or type it, which looks more live).
+2. Point at the "Searching for" capsules: *"Here's how it understood me: Division D2, point guard,
+   6'2" or shorter, emphasis on passing. Notice 'translate to D1' did **not** become a D1 filter."*
+3. Point at the line under it: *"25 players match. 13 are hidden because their Translation Score is
+   below 50. We don't let anyone rank high just for being unknown."* (Options can show them.)
+4. Point at the shortlist: *"Underrated is how much better he is than the attention he gets.
+   Translation asks whether his production would hold up at D1."*
 
 ## 1:15–2:00 · Scouting report (45s)
 
-1. Select **Darius Ellison** (D2 PG, 6'1").
-2. Stat card: *"11.1 assists and a 4.62 assist-to-turnover ratio. After we discount for D2
-   competition, that's still 99th percentile among D1 point guards."*
+1. **Darius Ellison** (D2 PG, 6'1") is already open on the right as the top match.
+2. "Why this ranking": *"A 4.62 assist-to-turnover ratio. After we discount for D2 competition,
+   that's still 99th percentile among D1 point guards."*
 3. Chart: *"Every bar is a percentile against D1 players at his position, after the level
-   adjustment. The dashed line is D1 average."*
-4. Click **Generate scouting report**. Scroll through it: snapshot, strengths, weaknesses, D1
-   projection, archetype, recommendation.
-5. Point at the green banner: *"Every number in this report is checked against the source data.
-   If the model invents a stat, we catch it and regenerate."*
+   adjustment. The dashed line is D1 average."* (Optional: switch to **Synergy** to show
+   points per possession and his play types.)
+4. Switch to **Scouting report** and click **Write scouting report**. Scroll through it: snapshot,
+   strengths, weaknesses, D1 projection, archetype, recommendation.
+5. Point at the green **Fact-checked** pill: *"Every number in this report is checked against the
+   source data. If the model invents a stat, we catch it and regenerate."*
 
 ## 2:00–2:30 · How the scoring works (30s)
 
@@ -60,7 +61,7 @@
 | Claude API down or slow | Caption: "Parsed by keyword fallback · LLM unavailable…" | Keep going. Say: *"The model is unavailable, so it falls back to a deterministic parser. Same results."* The example queries are tuned for the fallback. |
 | Report generation fails | Caption: "Written by offline template" | Same structure, guaranteed fact-check pass. Or click a player warmed in the cache (top 25). |
 | Wi-Fi dead entirely | UI and API run locally; only Claude needs the network | Unset the key (`ANTHROPIC_API_KEY=`) and restart the API. Everything runs offline. |
-| API process crashed | Red banner: "Can't reach the API…" | Restart: `uvicorn api.main:app --port 8000`. It loads in about 2s. |
+| API process crashed | Error under the search bar: "Can't reach the API…" | Restart: `uvicorn api.main:app --port 8000`. It loads in about 2s. |
 | Laptop or UI fails | n/a | Screen recording of the full flow (record it the night before) plus terminal fallback: `python -m scripts.try_queries` and `python -m scripts.evaluate_scoring`. |
 
 **Never** demo a query you haven't tried that day. Stick to the three example buttons, plus one
