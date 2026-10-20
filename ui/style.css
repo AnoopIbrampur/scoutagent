@@ -195,3 +195,6 @@ button[data-variant="segmented_control"][aria-checked="true"] {
 [data-testid="stHorizontalBlock"]:has(.st-key-detail) > [data-testid="stColumn"] { flex: 1 1 420px; min-width: min(420px, 100%); }
 .st-key-detail [data-testid="stHorizontalBlock"] { flex-wrap: wrap; row-gap: 8px; }
 .st-key-detail [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { flex: 1 1 130px; min-width: 130px; }
+
+/* Example pills wrap to a second line instead of clipping in narrow windows. */
+.st-key-searchbar [data-testid="stButtonGroup"]:has(button[data-variant="pills"]) > div { flex-wrap: wrap; row-gap: 6px; }

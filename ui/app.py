@@ -13,6 +13,7 @@ Layout follows Apple's design principles (styles live in ui/style.css):
 from __future__ import annotations
 
 import html
+import random
 import sys
 from pathlib import Path
 from typing import Any
@@ -28,12 +29,26 @@ import streamlit as st  # noqa: E402
 from scout.config import API_URL  # noqa: E402
 from scout.synergy import PERCENT_KEYS, RANK_KEYS, SYNERGY_COLUMNS  # noqa: E402
 
-# Short pill label -> full query (labels stay short so pills don't wrap).
+# Short pill label -> full query. Each one shows a different thing the search understands,
+# and each was checked to return real results. The first three are always shown first, so a
+# demo is predictable; after every search the pills rotate to show more of what it can do.
 EXAMPLES = {
     "D2 point guard, passer, under 6'3\"": "Find a D2 point guard who'd translate to D1, strong passer, under 6'3\"",
     "Shooting wings, small schools": "Best shooting wings from small schools",
     "NAIA or D3 rim protector": "NAIA or D3 big who protects the rim",
+    "Most D1-ready bigs in D2": "most D1-ready bigs in division ii, rebounding",
+    "Messy: \"need a guard lol…\"": "need a guard lol... 6-1 or shorter?? d3 maybe naia, takes care of the ball & can shoot it",
+    "6'7\"+ scoring forward, D2 or NAIA": "6-7 or taller forward from D2 or NAIA who can score",
+    "Lockdown defender in D2": "lockdown defender in D2",
+    "Efficient scorer, 6'5\"+, small school": "efficient scorer from a small school, at least 6'5",
+    "Who to watch at Verona Hills State": "Who should I watch at Verona Hills State?",
+    "Stretch four who can shoot": "stretch four who can shoot, division 2",
+    "Small-school center, 6'10\"+": "small-school center, 6'10 or taller, rebounding",
+    "Most D1-ready NAIA wing": "best D1-ready wing in NAIA",
+    "Small-school guard, low turnovers": "small-school guard who takes care of the ball",
+    "D2 shooting guard who scores efficiently": "D2 shooting guard under 6'4 who scores efficiently",
 }
+FIRST_EXAMPLES = list(EXAMPLES)[:3]
 ACCENT, NEUTRAL = "#0A84FF", "#8E8E93"  # system blue / system gray (work in light and dark)
 
 st.set_page_config(page_title="ScoutAgent", page_icon="🏀", layout="wide")
@@ -143,8 +158,22 @@ def percentile_chart(points: list[dict[str, Any]]) -> alt.LayerChart:
 
 # --------------------------------------------------------------------------- state
 st.session_state.setdefault("query", "")
+st.session_state.setdefault("example_labels", FIRST_EXAMPLES)
+st.session_state.setdefault("placeholder", "D2 point guard under 6'3\" who can really pass")
 st.session_state.setdefault("search", None)
 st.session_state.setdefault("reports", {})
+
+
+def rotate_examples() -> None:
+    """Show three different examples (never the query just run) and a fresh hint in the box."""
+    shown = set(st.session_state.example_labels)
+    current = st.session_state.get("query", "")
+    fresh = [label for label, q in EXAMPLES.items() if label not in shown and q != current]
+    rng = random.Random()
+    picks = rng.sample(fresh, k=min(3, len(fresh)))
+    st.session_state.example_labels = picks
+    hints = [q for label, q in EXAMPLES.items() if label not in picks and q != current]
+    st.session_state.placeholder = rng.choice(hints)
 
 
 def run_search() -> None:
@@ -155,6 +184,7 @@ def run_search() -> None:
             "query": st.session_state.query, "limit": 25,
             "include_gated": st.session_state.get("include_gated", False)})
         st.session_state.search_error = None
+        rotate_examples()
     except APIError as e:
         st.session_state.search, st.session_state.search_error = None, str(e)
 
@@ -184,10 +214,13 @@ with st.container(key="searchbar"):
     with st.form("search_form", border=False):
         c1, c2 = st.columns([7, 1], vertical_alignment="bottom")
         c1.text_input("Describe the player you need", key="query", label_visibility="collapsed",
-                      placeholder="D2 point guard under 6'3\" who can really pass")
+                      placeholder=st.session_state.placeholder)
         c2.form_submit_button("Search", type="primary", width="stretch", on_click=run_search)
-    p1, p2 = st.columns([7, 1], vertical_alignment="center")
-    p1.pills("Try", list(EXAMPLES), key="example", on_change=pick_example, label_visibility="collapsed")
+    p1, p_more, p2 = st.columns([6, 1.2, 1], vertical_alignment="center", gap="small")
+    p1.pills("Try", st.session_state.example_labels, key="example", on_change=pick_example,
+             label_visibility="collapsed")
+    p_more.button("More ideas", icon=":material/shuffle:", type="tertiary", on_click=rotate_examples,
+                  help="Show other example searches", key="more_examples", width="stretch")
     with p2.popover("Options", width="stretch"):
         st.toggle("Include players below the Translation gate", key="include_gated", on_change=run_search,
                   help="By default, Underrated rankings only include players with Translation ≥ 50, "

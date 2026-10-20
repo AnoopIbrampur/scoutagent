@@ -139,6 +139,7 @@ The Streamlit UI (`ui/app.py`, styles in `ui/style.css`) follows Apple's interfa
 - The path is search, shortlist, player. The shortlist and the player sit side by side and the top match opens on its own. Synergy tables and the report sit one level down behind a segmented control, and the gate option lives in an Options menu.
 - Text uses the system font, with tight spacing on the big headline, normal spacing on body text, and tabular numbers so stats line up.
 - The search bar floats as a blurred, translucent layer that content scrolls under. Cards are soft fills, not boxes.
+- The example searches rotate. A fresh page always shows the same three, so demos are predictable. After each search, or when you click More ideas, they swap to others from a pool of 14 that each show something different the search understands (a messy request, a height range, "D1-ready" sorting, a school name). Every one was checked to return real results.
 - Buttons shrink slightly when pressed. Status shows up as small pills colored by meaning (green for fact-checked, orange for a concern, red for unverified) instead of full-width alert boxes.
 - Colors are Apple's system colors for light and dark, set in `.streamlit/config.toml`, so the app follows your OS setting. Surfaces take their tint from the text color, so they stay readable even if Streamlit's theme and the OS disagree.
 - The list and player stack when there isn't room for both, and the metric tiles wrap instead of truncating.

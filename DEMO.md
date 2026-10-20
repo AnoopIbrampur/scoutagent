@@ -5,6 +5,7 @@ Before you present, give yourself five minutes:
 1. Start the API and the UI. Run one search and check that the line under the search bar says "understood by Claude". If it says "the keyword parser", there's no key set.
 2. Run `python -m scripts.warm_cache 25` so the reports you're likely to open are already cached.
 3. Skim the backup table at the bottom of this page.
+4. Reload the page right before you start. The example pills rotate after every search, and a fresh page brings back the three this script uses.
 
 Say up front that the data is synthetic. The players, schools and stats are generated, with a few hidden gems planted so we can check the scoring finds them. Nobody should walk away thinking these are real recruits.
 
@@ -20,6 +21,7 @@ Say up front that the data is synthetic. The players, schools and stats are gene
 2. Point at the "Searching for" pills. "This is how it read my request: D2, point guard, 6'2" or shorter, passing. Notice that 'translate to D1' didn't turn into a D1 filter."
 3. Point at the line below. "25 players match, and 13 are hidden because their Translation Score is under 50. I don't want anyone ranking high just for being unknown." The Options menu can show them.
 4. Point at the shortlist. "Underrated is how much better he is than the attention he gets. Translation is whether his production would hold up at D1."
+5. Optional, if someone asks what else it understands: click More ideas. The pills swap to other searches, like a messy typed request, a height range, or a specific school.
 
 ## 1:15 to 2:00. The scouting report (45s)
 
