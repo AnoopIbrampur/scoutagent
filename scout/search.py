@@ -76,7 +76,7 @@ class SearchBackend(ABC):
     """Interface every search implementation must provide."""
 
     @abstractmethod
-    def search(self, filters: SearchFilters, limit: int = 20) -> dict[str, Any]:
+    def search(self, filters: SearchFilters, limit: int = 20, apply_gate: bool = True) -> dict[str, Any]:
         """Return {"results": [...], "total_matches", "excluded_by_gate", "where_sql"}."""
 
     @abstractmethod
@@ -114,14 +114,14 @@ class DuckDBSearchBackend(SearchBackend):
             params += [f"%{f.text_match}%"] * 2
         return (" AND ".join(clauses) or "TRUE"), params
 
-    def search(self, filters: SearchFilters, limit: int = 20) -> dict[str, Any]:
+    def search(self, filters: SearchFilters, limit: int = 20, apply_gate: bool = True) -> dict[str, Any]:
         where, params = self._where(filters)
         matches = self._con.execute(f"SELECT * FROM player_scores WHERE {where}", params).df()
         total = len(matches)
 
         gate = SCORING_CONFIG.get("min_translation_to_rank")
         excluded = 0
-        if filters.sort_by == "underrated" and gate is not None:
+        if apply_gate and filters.sort_by == "underrated" and gate is not None:
             keep = matches["translation_score"] >= gate
             excluded = int((~keep).sum())
             matches = matches[keep]
@@ -146,7 +146,7 @@ class DuckDBSearchBackend(SearchBackend):
             )
             results.append(item)
         return {"results": results, "total_matches": total, "excluded_by_gate": excluded,
-                "gate": gate if filters.sort_by == "underrated" else None, "where_sql": where}
+                "gate": gate if (apply_gate and filters.sort_by == "underrated") else None, "where_sql": where}
 
     @property
     def schools(self) -> list[str]:
