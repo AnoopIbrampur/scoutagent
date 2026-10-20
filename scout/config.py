@@ -65,13 +65,17 @@ SCORING_CONFIG: dict = {
     # least D1-average (Translation >= this) are eligible. Without it, players
     # rank high just for being unknown. Set to None to disable.
     "min_translation_to_rank": 50.0,
+    # Synergy small-sample shrinkage: phantom possessions (or FGA for SSM) at the
+    # D1 position average, like the 3P% prior. Defense samples are smaller.
+    "synergy_prior_off_poss": 50,
+    "synergy_prior_def_poss": 100,
     # Attention blend (weights sum to 1).
     "attention_weights": {"recruiting_stars": 0.40, "social_followers": 0.35, "news_mentions_90d": 0.25},
 }
 
-# Position-aware Translation weights over adjusted stats (each row sums to 1).
+# Box-score weights by position (each row sums to 1).
 # PG emphasizes decision-making and shooting; bigs emphasize rebounding/rim protection.
-POSITION_WEIGHTS: dict[str, dict[str, float]] = {
+BOX_SCORE_WEIGHTS: dict[str, dict[str, float]] = {
     "PG": {"ast_to": 0.22, "ast_per40": 0.20, "ts_pct": 0.18, "three_pct_adj": 0.15,
            "pts_per40": 0.10, "stl_per40": 0.08, "ft_pct": 0.07},
     "SG": {"ts_pct": 0.22, "three_pct_adj": 0.20, "pts_per40": 0.20, "ast_per40": 0.10,
@@ -82,6 +86,21 @@ POSITION_WEIGHTS: dict[str, dict[str, float]] = {
            "three_pct_adj": 0.10, "stl_per40": 0.08, "ast_to": 0.10},
     "C": {"ts_pct": 0.22, "reb_per40": 0.25, "blk_per40": 0.22, "pts_per40": 0.15,
           "ft_pct": 0.06, "ast_to": 0.10},
+}
+
+# Synergy "All Possessions" stats (same for every position). Possession-based
+# efficiency and defense are what box scores miss, so they get 32% of Translation:
+#   off_ppp - points per possession used         ssm - shot-making above shot quality
+#   to_pct  - turnovers per possession (lower=better)
+#   def_ppp - points per possession allowed as primary defender (lower=better)
+SYNERGY_WEIGHTS: dict[str, float] = {"off_ppp": 0.10, "ssm": 0.08, "to_pct": 0.04, "def_ppp": 0.10}
+BOX_SCORE_SHARE = 1 - sum(SYNERGY_WEIGHTS.values())
+
+# Final Translation weights. Players without Synergy data are scored on the
+# box-score part alone (weights renormalized per player).
+POSITION_WEIGHTS: dict[str, dict[str, float]] = {
+    pos: {stat: w * BOX_SCORE_SHARE for stat, w in box.items()} | SYNERGY_WEIGHTS
+    for pos, box in BOX_SCORE_WEIGHTS.items()
 }
 
 # LLM settings. Timeout is per attempt; the SDK retries 429/5xx/timeouts.

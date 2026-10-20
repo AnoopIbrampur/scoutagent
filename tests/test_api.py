@@ -7,13 +7,14 @@ from fastapi.testclient import TestClient
 
 from api.main import create_app
 from scout.search import DuckDBSearchBackend
+from scout.synergy import generate_synergy
 from scripts.generate_seed_data import generate_players
 
 
 @pytest.fixture(scope="module")
 def client(tmp_path_factory, monkeypatch_module) -> TestClient:
     players, _ = generate_players(seed=42)
-    app = create_app(backend=DuckDBSearchBackend(players=players),
+    app = create_app(backend=DuckDBSearchBackend(players=players, synergy=generate_synergy(players, seed=42)),
                      db_path=tmp_path_factory.mktemp("db") / "t.duckdb")
     with TestClient(app) as c:
         yield c
@@ -63,3 +64,9 @@ def test_player_and_report(client) -> None:
 def test_unknown_player_404(client) -> None:
     assert client.get("/players/NOPE").status_code == 404
     assert client.post("/players/NOPE/report").status_code == 404
+
+
+def test_player_includes_synergy_splits(client) -> None:
+    syn = client.get("/players/P0001").json()["synergy"]
+    assert [len(syn["offense"]), len(syn["defense"])] == [12, 12]
+    assert syn["offense"][0]["situation"] == "All Possessions" and "ssm" in syn["offense"][0]

@@ -33,7 +33,7 @@ from scout.scoring import STAT_LABELS, explain_player
 
 log = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v2"  # bump to invalidate cached reports after prompt changes
+PROMPT_VERSION = "v3"  # bump to invalidate cached reports after prompt changes
 SECTIONS = [
     "Snapshot", "Strengths", "Weaknesses / Questions", "Projection at D1 Level",
     "Comparable Player Archetype", "Recommendation",
@@ -106,7 +106,10 @@ def build_report_input(row: pd.Series) -> dict[str, Any]:
             "turnovers_per40": round(float(row["adj_tov_per40"]), 1),
             "true_shooting_pct": _pct(row["adj_ts_pct"]),
         },
-        "d1_position_percentiles": {STAT_LABELS[s]: int(round(float(row[f"pct_{s}"]))) for s in pct_stats},
+        # 100 = best at the position for every stat, including turnovers and points allowed.
+        "d1_position_percentiles": {STAT_LABELS[s]: int(round(float(row[f"pct_{s}"])))
+                                    for s in pct_stats if not pd.isna(row[f"pct_{s}"])},
+        "synergy": synergy_facts(row),
         "attention": {
             "recruiting_stars": int(row["recruiting_stars"]),
             "social_followers": int(row["social_followers"]),
@@ -120,6 +123,27 @@ def build_report_input(row: pd.Series) -> dict[str, Any]:
         },
         "suggested_recommendation": suggested_recommendation(t, u),
     }
+
+
+def synergy_facts(row: pd.Series) -> dict[str, Any] | None:
+    """Synergy All Possessions numbers, rounded as Synergy displays them (None if no data)."""
+    if pd.isna(row.get("off_ppp", float("nan"))):
+        return None
+    out: dict[str, Any] = {
+        "offense_possessions": int(row["syn_off_poss"]), "points_per_possession": round(float(row["off_ppp"]), 3),
+        "ppp_rank": None if pd.isna(row["off_ppp_rank"]) else int(row["off_ppp_rank"]),
+        "rating": row["off_rating"], "shot_quality_ssq": round(float(row["ssq"]), 2),
+        "shot_making_ssm": round(float(row["ssm"]), 2), "turnover_rate": _pct(row["to_pct"]),
+    }
+    if not pd.isna(row.get("def_ppp", float("nan"))):
+        out.update({
+            "defense_possessions": int(row["syn_def_poss"]),
+            "points_allowed_per_possession": round(float(row["def_ppp"]), 3),
+            "defense_ppp_rank": None if pd.isna(row["def_ppp_rank"]) else int(row["def_ppp_rank"]),
+            "defense_rating": row["def_rating"],
+        })
+    out["note"] = "Ranks are Synergy-style percentiles across all players, before any level adjustment."
+    return out
 
 
 def input_hash(facts: dict[str, Any]) -> str:
@@ -161,6 +185,7 @@ def allowed_numbers(facts: dict[str, Any]) -> set[float]:
     _collect_numbers(facts, nums)
     for v in facts["d1_position_percentiles"].values():
         nums.add(100.0 - v)
+    nums |= {abs(n) for n in nums}  # "-0.21 SSM" is matched as 0.21 by the number regex
     nums.update({40.0, 100.0})
     return nums
 
@@ -274,7 +299,8 @@ _ARCHETYPES = {
     ("PF", "other"): "Efficient frontcourt finisher who rebounds his position",
     ("C", "other"): "Rim-running center who finishes efficiently and controls the glass",
 }
-_SKILL_OF_STAT = {"ast_to": "passing", "ast_per40": "passing", "three_pct_adj": "shooting", "ts_pct": "shooting"}
+_SKILL_OF_STAT = {"ast_to": "passing", "ast_per40": "passing", "three_pct_adj": "shooting", "ts_pct": "shooting",
+                  "ssm": "shooting"}
 
 
 def template_report(facts: dict[str, Any], row: pd.Series) -> str:
@@ -295,6 +321,16 @@ def template_report(facts: dict[str, Any], row: pd.Series) -> str:
     news = "no news mentions" if att["news_mentions_90d"] == 0 else f"{att['news_mentions_90d']} news mentions"
     weaknesses.append(f"- Question: {stars} and {news} in 90 days, so little outside film or "
                       f"evaluation exists. Verify the numbers in person.")
+    syn = facts.get("synergy")
+    synergy_line = ""
+    if syn:
+        synergy_line = (f" Synergy has him at {syn['points_per_possession']:.3f} points per possession "
+                        f"({syn['rating'] or 'unrated'}) with shot-making of {syn['shot_making_ssm']:+.2f} over "
+                        f"expected")
+        if "points_allowed_per_possession" in syn:
+            synergy_line += (f", and {syn['points_allowed_per_possession']:.3f} points allowed per possession "
+                             f"on defense ({syn['defense_rating'] or 'unrated'})")
+        synergy_line += "."
     return "\n".join([
         "## Snapshot",
         f"{p['class_year']} {p['height']} {p['position']} at {p['school']} ({p['division']}, {p['conference']}): "
@@ -312,7 +348,7 @@ def template_report(facts: dict[str, Any], row: pd.Series) -> str:
         f"{a['points_per40']} points, {a['rebounds_per40']} rebounds and {a['assists_per40']} assists per 40 "
         f"minutes against D1 competition, with true shooting around {a['true_shooting_pct']}. "
         f"A Translation Score of {sc['translation']} places that adjusted profile above most D1 "
-        f"{p['position']}s on the stats that matter most for the position.",
+        f"{p['position']}s on the stats that matter most for the position.{synergy_line}",
         "",
         "## Comparable Player Archetype",
         f"{archetype}.",
@@ -336,6 +372,9 @@ If something is not in the data, describe it in words without a number.
 - Strengths and Weaknesses / Questions: 2-4 bullets each, grounded in the data. Weaknesses may \
 include open questions a staff should answer on film.
 - Projection at D1 Level: use the d1_adjusted numbers and percentiles.
+- If synergy data is present, use it: points per possession and its rating show efficiency per \
+trip, SSM shows shot-making beyond the quality of his shots, and points allowed per possession \
+shows how he defends. Percentiles in d1_position_percentiles are always "higher = better".
 - Judge him only against the D1 percentiles provided. Do not compare him to other prospects, his conference, or any list or ranking you were not given.
 - Write numbers as digits. Do not compute fractions or multiples ("a third", "twice").
 - Comparable Player Archetype: describe a player TYPE. Never name a real player.

@@ -12,13 +12,14 @@ from scout.report import (
     template_report,
 )
 from scout.search import DuckDBSearchBackend
+from scout.synergy import generate_synergy
 from scripts.generate_seed_data import generate_players
 
 
 @pytest.fixture(scope="module")
 def scored() -> pd.DataFrame:
     players, _ = generate_players(seed=42)
-    return DuckDBSearchBackend(players=players).scored
+    return DuckDBSearchBackend(players=players, synergy=generate_synergy(players, seed=42)).scored
 
 
 @pytest.fixture(scope="module")
@@ -224,3 +225,14 @@ def test_claims_survive_cache_round_trip(row, tmp_path, monkeypatch) -> None:
     first = generate_report(row, db_path=db, use_llm=True)
     cached = generate_report(row, db_path=db, use_llm=True)
     assert cached.cached and cached.unsupported_claims == first.unsupported_claims != []
+
+
+def test_report_facts_include_synergy(row) -> None:
+    syn = build_report_input(row)["synergy"]
+    assert {"points_per_possession", "shot_making_ssm", "turnover_rate", "points_allowed_per_possession"} <= set(syn)
+
+
+def test_negative_ssm_not_flagged(scored) -> None:
+    r = scored[scored["ssm"] < 0].iloc[0]
+    f = build_report_input(r)
+    assert check_numbers(f"Shot-making of {r['ssm']:+.2f} over expected.", f) == []

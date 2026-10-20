@@ -18,6 +18,7 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from scout.config import API_URL  # noqa: E402
+from scout.synergy import PERCENT_KEYS, RANK_KEYS, SYNERGY_COLUMNS  # noqa: E402
 
 # (button label, full query). Labels stay short so the buttons don't truncate.
 EXAMPLES = [
@@ -48,6 +49,24 @@ def api(method: str, path: str, timeout: float = 15.0, **kwargs: Any) -> dict[st
         detail = r.json().get("detail", r.text) if r.headers.get("content-type", "").startswith("application/json") else r.text
         raise APIError(f"API error {r.status_code}: {detail}")
     return r.json()
+
+
+def synergy_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    """Rows -> DataFrame with Synergy's column labels and display formatting."""
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    for key in PERCENT_KEYS:
+        df[key] = df[key].map(lambda v: "–" if pd.isna(v) else f"{100 * v:.1f}%")
+    for key in RANK_KEYS:
+        df[key] = df[key].map(lambda v: "–" if pd.isna(v) else f"{v:.0f}%")
+    df["ppp"] = df["ppp"].map(lambda v: "–" if pd.isna(v) else f"{v:.3f}")
+    df["ssm"] = df["ssm"].map(lambda v: "–" if pd.isna(v) else f"{v:+.2f}")
+    for key in ("ssq", "pps", "fta_per_fga"):
+        df[key] = df[key].map(lambda v: "–" if pd.isna(v) else f"{v:.2f}")
+    df["rating"] = df["rating"].fillna("–")
+    labels = {"situation": "STAT"} | dict(SYNERGY_COLUMNS)
+    return df[list(labels)].rename(columns=labels)
 
 
 @st.cache_data(show_spinner=False)
@@ -84,11 +103,11 @@ with st.form("search_form", border=False):
     c1, c2 = st.columns([6, 1])
     c1.text_input("Describe the player you need", key="query", label_visibility="collapsed",
                   placeholder="e.g. D2 point guard under 6'3\" who can pass")
-    c2.form_submit_button("Search", type="primary", use_container_width=True, on_click=run_search)
+    c2.form_submit_button("Search", type="primary", width="stretch", on_click=run_search)
 
 ex_cols = st.columns(len(EXAMPLES))
 for col, (label, q) in zip(ex_cols, EXAMPLES):
-    col.button(f"Try: {label}", on_click=use_example, args=(q,), use_container_width=True, help=q)
+    col.button(f"Try: {label}", on_click=use_example, args=(q,), width="stretch", help=q)
 st.toggle("Include players below the Translation gate", key="include_gated", on_change=run_search,
           help="By default, Underrated rankings only include players with Translation ≥ 50, "
                "so nobody ranks high just for being unknown.")
@@ -126,7 +145,7 @@ table = pd.DataFrame([{
 } for r in res["results"]])
 st.subheader("Shortlist")
 event = st.dataframe(
-    table, hide_index=True, use_container_width=True, on_select="rerun", selection_mode="single-row",
+    table, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row",
     column_config={
         "Translation": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f"),
         "Underrated": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.1f"),
@@ -173,7 +192,7 @@ with left:
         tooltip=["label", "percentile", "weight"],
     )
     avg = alt.Chart(pd.DataFrame({"x": [50]})).mark_rule(strokeDash=[4, 4]).encode(x="x:Q")
-    st.altair_chart(bars + avg, use_container_width=True)
+    st.altair_chart(bars + avg, width="stretch")
     st.caption("Dashed line = D1 position average (50th percentile).")
 with right:
     st.markdown("**Why this ranking**")
@@ -184,6 +203,27 @@ with right:
         st.caption(n)
     st.caption(f"Attention inputs: {raw['recruiting_stars']}★ · {raw['social_followers']:,} followers · "
                f"{raw['news_mentions_90d']} news mentions (90 days) → Attention {s['attention_score']:.1f}")
+
+# --------------------------------------------------------------------------- synergy
+syn = p.get("synergy")
+if syn:
+    st.markdown("**Synergy splits** (same layout as a Synergy *Player Details > Overall* export)")
+    overall = {side: next((r for r in rows if r["situation"] == "All Possessions"), None)
+               for side, rows in syn.items()}
+    o, d = overall.get("offense"), overall.get("defense")
+    sm = st.columns(4)
+    if o:
+        sm[0].metric("Off. PPP", f"{o['ppp']:.3f}", help=f"{o['rating'] or 'unrated'} · rank {o['ppp_rank']}")
+        sm[1].metric("SSM", f"{o['ssm']:+.2f}", help="Shot-making: points per shot above what his shot quality (SSQ) predicts")
+        sm[2].metric("TO%", f"{100 * o['to_pct']:.1f}%")
+    if d:
+        sm[3].metric("Def. PPP allowed", f"{d['ppp']:.3f}", help=f"{d['rating'] or 'unrated'} · rank {d['ppp_rank']}")
+    tabs = st.tabs(["Offense", "Defense"])
+    for tab, side in zip(tabs, ("offense", "defense")):
+        with tab:
+            st.dataframe(synergy_frame(syn.get(side, [])), hide_index=True, width="stretch")
+    st.caption("Ranks are percentiles across all players (Synergy-style). '–' means too few possessions to rank. "
+               "Data is synthetic unless imported from real exports.")
 
 # --------------------------------------------------------------------------- report
 st.divider()

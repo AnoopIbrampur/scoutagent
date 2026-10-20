@@ -24,20 +24,21 @@ import duckdb
 import pandas as pd
 
 from scout.config import DB_PATH, SCORING_CONFIG
-from scout.db import fetch_players, get_connection
+from scout.db import fetch_players, fetch_synergy, get_connection
 from scout.query_parser import SearchFilters, inches_to_str
 from scout.scoring import explain_player, score_players
+from scout.synergy import STAT_KEYS, attach_synergy
 
-# Which percentile columns each skill tag maps to. tov_per40 is inverted.
+# Which percentile columns each skill tag maps to (all percentiles are higher = better).
 EMPHASIS_STATS: dict[str, list[str]] = {
     "passing": ["ast_per40", "ast_to"],
-    "shooting": ["three_pct_adj", "ts_pct", "ft_pct"],
-    "scoring": ["pts_per40", "ts_pct"],
+    "shooting": ["three_pct_adj", "ts_pct", "ft_pct", "ssm"],
+    "scoring": ["pts_per40", "ts_pct", "off_ppp"],
     "rebounding": ["reb_per40"],
-    "defense": ["stl_per40", "blk_per40"],
+    "defense": ["stl_per40", "blk_per40", "def_ppp"],
     "rim_protection": ["blk_per40", "reb_per40"],
-    "efficiency": ["ts_pct", "ast_to"],
-    "ball_security": ["ast_to", "tov_per40"],
+    "efficiency": ["ts_pct", "ast_to", "off_ppp"],
+    "ball_security": ["ast_to", "tov_per40", "to_pct"],
 }
 EMPHASIS_WEIGHT = 0.3
 
@@ -56,8 +57,7 @@ def emphasis_score(df: pd.DataFrame, emphasis: list[str]) -> pd.Series:
     cols = []
     for tag in emphasis:
         for stat in EMPHASIS_STATS[tag]:
-            pct = df[f"pct_{stat}"]
-            cols.append(100 - pct if stat == "tov_per40" else pct)
+            cols.append(df[f"pct_{stat}"])  # NaN (no Synergy data) is skipped by mean()
     return pd.concat(cols, axis=1).mean(axis=1) if cols else pd.Series(float("nan"), index=df.index)
 
 
@@ -80,6 +80,17 @@ class SearchBackend(ABC):
         """Return {"results": [...], "total_matches", "excluded_by_gate", "where_sql"}."""
 
     @abstractmethod
+    def get_synergy(self, player_id: str) -> dict[str, list[dict[str, Any]]] | None:
+        """A player's Synergy situational rows (offense and defense), JSON-safe, or None."""
+        if self.synergy is None:
+            return None
+        out = {}
+        for side, table in zip(("offense", "defense"), self.synergy):
+            rows = table[table["player_id"] == player_id]
+            out[side] = [{"situation": r["situation"], **{k: to_python(r[k]) for k in STAT_KEYS}}
+                         for _, r in rows.iterrows()]
+        return out if out["offense"] or out["defense"] else None
+
     def get_player(self, player_id: str) -> pd.Series | None:
         """Return the full scored row for one player, or None."""
 
@@ -87,11 +98,15 @@ class SearchBackend(ABC):
 class DuckDBSearchBackend(SearchBackend):
     """Scores all players on load, then filters with DuckDB SQL over the scored table."""
 
-    def __init__(self, db_path: Path | str = DB_PATH, players: pd.DataFrame | None = None) -> None:
+    def __init__(self, db_path: Path | str = DB_PATH, players: pd.DataFrame | None = None,
+                 synergy: tuple[pd.DataFrame, pd.DataFrame] | None = None) -> None:
+        """Load from DuckDB, or use the given players (+ optional Synergy offense/defense tables)."""
         if players is None:
             with get_connection(db_path, read_only=True) as con:
                 players = fetch_players(con)
-        self.scored = score_players(players)
+                synergy = fetch_synergy(con)
+        self.synergy = synergy if synergy and synergy[0] is not None else None
+        self.scored = score_players(attach_synergy(players, *(self.synergy or (None, None))))
         self._con = duckdb.connect()  # in-memory; avoids file locks with other processes
         self._con.register("player_scores", self.scored)
 
@@ -152,6 +167,17 @@ class DuckDBSearchBackend(SearchBackend):
     def schools(self) -> list[str]:
         """All school names (lets the keyword parser recognize them)."""
         return sorted(self.scored["school"].unique())
+
+    def get_synergy(self, player_id: str) -> dict[str, list[dict[str, Any]]] | None:
+        """A player's Synergy situational rows (offense and defense), JSON-safe, or None."""
+        if self.synergy is None:
+            return None
+        out = {}
+        for side, table in zip(("offense", "defense"), self.synergy):
+            rows = table[table["player_id"] == player_id]
+            out[side] = [{"situation": r["situation"], **{k: to_python(r[k]) for k in STAT_KEYS}}
+                         for _, r in rows.iterrows()]
+        return out if out["offense"] or out["defense"] else None
 
     def get_player(self, player_id: str) -> pd.Series | None:
         rows = self.scored[self.scored["player_id"] == player_id]

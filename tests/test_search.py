@@ -9,13 +9,14 @@ import pytest
 from scout.config import SCORING_CONFIG
 from scout.query_parser import SearchFilters
 from scout.search import DuckDBSearchBackend
+from scout.synergy import generate_synergy
 from scripts.generate_seed_data import generate_players
 
 
 @pytest.fixture(scope="module")
 def backend() -> DuckDBSearchBackend:
     players, _ = generate_players(seed=42)
-    return DuckDBSearchBackend(players=players)
+    return DuckDBSearchBackend(players=players, synergy=generate_synergy(players, seed=42))
 
 
 def test_filters_respected(backend) -> None:

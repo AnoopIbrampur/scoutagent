@@ -10,6 +10,7 @@ from scout.scoring import (
     adjust_stats, derive_stats, estimate_fga, explain_player, level_multiplier,
     percentile_against, score_players, shrink_three_pct, true_shooting, underrated_score,
 )
+from scout.synergy import attach_synergy, generate_synergy
 from scripts.generate_seed_data import generate_players
 
 
@@ -21,7 +22,7 @@ def seed() -> tuple[pd.DataFrame, pd.DataFrame]:
 @pytest.fixture(scope="module")
 def scored(seed) -> pd.DataFrame:
     players, _ = seed
-    return score_players(players)
+    return score_players(attach_synergy(players, *generate_synergy(players, seed=42)))
 
 
 def _row(**overrides) -> pd.DataFrame:
@@ -156,7 +157,7 @@ def test_explanation_structure(scored) -> None:
 
 
 def test_turnover_concern_wording(scored) -> None:
-    sloppy = scored.sort_values("pct_tov_per40", ascending=False).iloc[0]
+    sloppy = scored.sort_values("pct_tov_per40").iloc[0]  # lowest = most turnovers
     exp = explain_player(sloppy)
     assert exp["top_concern"]["stat"] == "tov_per40"
     assert "higher than" in exp["top_concern"]["text"]

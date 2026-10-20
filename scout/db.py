@@ -48,3 +48,21 @@ def fetch_players(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
 def fetch_planted(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
     """Return planted labels (evaluation only; never used for scoring)."""
     return con.execute("SELECT * FROM planted_gems ORDER BY player_id").df()
+
+
+def load_synergy(con: duckdb.DuckDBPyConnection, offense: pd.DataFrame, defense: pd.DataFrame,
+                 prefix: str = "synergy") -> None:
+    """Replace <prefix>_offense and <prefix>_defense (Synergy situational tables)."""
+    for side, df in (("offense", offense), ("defense", defense)):
+        con.register("syn_df", df)
+        con.execute(f"CREATE OR REPLACE TABLE {prefix}_{side} AS SELECT * FROM syn_df")
+        con.unregister("syn_df")
+
+
+def fetch_synergy(con: duckdb.DuckDBPyConnection, prefix: str = "synergy") -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+    """Return (offense, defense) Synergy tables, or (None, None) if they don't exist yet."""
+    try:
+        return (con.execute(f"SELECT * FROM {prefix}_offense").df(),
+                con.execute(f"SELECT * FROM {prefix}_defense").df())
+    except duckdb.CatalogException:
+        return None, None

@@ -2,13 +2,17 @@
 
 Pipeline (each step adds columns to the DataFrame):
   1. derive_stats      - TS%, AST/TO, per-40 rates, volume-shrunk 3P%
-  2. adjust_stats      - level/conference adjustment -> adj_* columns
-  3. add_percentiles   - pct_* = percentile of adj_* among D1 players at the same position
+  2. adjust_stats      - small-sample shrinkage + level/conference adjustment -> adj_* columns
+  3. add_percentiles   - pct_* = percentile of adj_* among D1 players at the same position.
+                         Always "higher = better": for lower-is-better stats (turnovers,
+                         points allowed) pct_* is how many D1 players he BEATS.
   4. translation       - position-weighted blend of pct_*, shrunk for low minutes
   5. attention         - percentile blend of stars, log followers, news mentions
   6. underrated        - (translation - attention), rescaled to 0-100
   explain_player()     - top 3 factors + top concern, as plain-English strings
 
+Synergy stats (off_ppp, ssm, to_pct, def_ppp) come from scout.synergy.attach_synergy.
+Players without them are scored on box-score stats only.
 All tunable constants live in scout.config (SCORING_CONFIG, POSITION_WEIGHTS).
 """
 
@@ -24,15 +28,22 @@ from scout.config import POSITION_WEIGHTS, POSITIONS, SCORING_CONFIG
 COUNTING_STATS = ["pts_per40", "reb_per40", "ast_per40", "stl_per40", "blk_per40"]
 EFFICIENCY_STATS = ["ts_pct", "three_pct_adj", "ft_pct", "ast_to"]
 NEGATIVE_STATS = ["tov_per40"]  # lower is better; used for concerns, not weights
-ALL_SCORED_STATS = COUNTING_STATS + EFFICIENCY_STATS + NEGATIVE_STATS
+SYNERGY_STATS = ["off_ppp", "ssm", "to_pct", "def_ppp"]
+ALL_SCORED_STATS = COUNTING_STATS + EFFICIENCY_STATS + NEGATIVE_STATS + SYNERGY_STATS
+LOWER_IS_BETTER = {"tov_per40", "to_pct", "def_ppp"}
 
 STAT_LABELS = {
     "pts_per40": "Points per 40", "reb_per40": "Rebounds per 40", "ast_per40": "Assists per 40",
     "stl_per40": "Steals per 40", "blk_per40": "Blocks per 40", "tov_per40": "Turnovers per 40",
     "ts_pct": "True shooting %", "three_pct_adj": "3P% (volume-adjusted)", "ft_pct": "FT%",
     "ast_to": "Assist-to-turnover ratio",
+    "off_ppp": "Points per possession (Synergy)", "ssm": "Shot-making over expected (Synergy SSM)",
+    "to_pct": "Turnover rate (Synergy TO%)", "def_ppp": "Points allowed per possession (Synergy)",
 }
-PCT_STATS = {"ts_pct", "three_pct_adj", "ft_pct"}
+PCT_STATS = {"ts_pct", "three_pct_adj", "ft_pct", "to_pct"}
+# How a lower-is-better stat reads when it is a concern ("... than 72% of D1 PGs").
+_WORSE_PHRASE = {"tov_per40": "higher than", "to_pct": "turns it over more often than",
+                 "def_ppp": "allows more per possession than"}
 
 
 # --------------------------------------------------------------------------- 1
@@ -60,7 +71,10 @@ def true_shooting(points: pd.Series, fga: pd.Series, fta: pd.Series) -> pd.Serie
 
 
 def derive_stats(players: pd.DataFrame) -> pd.DataFrame:
-    """Add fga_pg, ts_pct, ast_to, *_per40, and three_pct_adj columns."""
+    """Add fga_pg, ts_pct, ast_to, *_per40, and three_pct_adj columns.
+
+    Synergy columns are added as NaN if missing, so every later step can rely on them.
+    """
     df = players.copy()
     df["fga_pg"] = estimate_fga(df)
     df["ts_pct"] = true_shooting(df["points_pg"], df["fga_pg"], df["ft_att_pg"])
@@ -72,6 +86,9 @@ def derive_stats(players: pd.DataFrame) -> pd.DataFrame:
         df[dst] = df[src] * per40
     df["three_pct_adj"] = shrink_three_pct(df)
     df["season_minutes"] = df["games"] * df["minutes_pg"]
+    for col in SYNERGY_STATS + ["syn_off_poss", "syn_def_poss", "syn_fga"]:
+        if col not in df:
+            df[col] = np.nan
     return df
 
 
@@ -92,6 +109,14 @@ def shrink_three_pct(df: pd.DataFrame) -> pd.Series:
     return (makes + k * prior) / (attempts + k)
 
 
+def shrink_to_d1_average(df: pd.DataFrame, stat: str, sample: str, k: float) -> pd.Series:
+    """(x * n + avg * k) / (n + k): small Synergy samples are pulled to the D1 position average."""
+    d1 = df[(df["division"] == "D1") & df[stat].notna()]
+    avg = df["position"].map(d1.groupby("position")[stat].mean())
+    n = df[sample].fillna(0)
+    return (df[stat] * n + avg * k) / (n + k)
+
+
 # --------------------------------------------------------------------------- 2
 def level_multiplier(division: str | pd.Series, conference_strength: float | pd.Series) -> Any:
     """Production multiplier = level_factor[division] * (base + slope * conference_strength)."""
@@ -102,6 +127,12 @@ def level_multiplier(division: str | pd.Series, conference_strength: float | pd.
     return factor * conf
 
 
+def _discount_good_side(x: pd.Series, avg: pd.Series, trust: pd.Series, lower_is_better: bool) -> np.ndarray:
+    """Pull only the better-than-D1-average part of x toward the average by `trust`."""
+    better = (x < avg) if lower_is_better else (x > avg)
+    return np.where(better, avg + (x - avg) * trust, x)
+
+
 def adjust_stats(df: pd.DataFrame) -> pd.DataFrame:
     """Add level_mult and adj_* columns.
 
@@ -109,10 +140,11 @@ def adjust_stats(df: pd.DataFrame) -> pd.DataFrame:
     * Turnovers per 40 are divided by it (weaker defenses force fewer turnovers,
       so a small-school turnover rate understates the D1 rate).
     * Efficiency stats can't be scaled (0.60 TS% * 0.8 = 0.48 is nonsense), so
-      only the part ABOVE the D1 position average is discounted:
-          adj = avg + (x - avg) * min(mult, 1)   if x > avg, else x unchanged.
+      only the part BETTER than the D1 position average is discounted:
+          adj = avg + (x - avg) * min(mult, 1)   if x is better than avg, else x.
       Strong numbers against weak competition are trusted less; weak numbers
-      get no free pass.
+      get no free pass. Synergy stats are treated the same way after
+      small-sample shrinkage (PPP allowed is "better" when lower).
     """
     df = df.copy()
     df["level_mult"] = level_multiplier(df["division"], df["conference_strength"])
@@ -120,26 +152,39 @@ def adjust_stats(df: pd.DataFrame) -> pd.DataFrame:
         df[f"adj_{stat}"] = df[stat] * df["level_mult"]
     df["adj_tov_per40"] = df["tov_per40"] / df["level_mult"]
 
-    d1_avg = df[df["division"] == "D1"].groupby("position")[EFFICIENCY_STATS].mean()
     trust = df["level_mult"].clip(upper=1.0)
+    d1_avg = df[df["division"] == "D1"].groupby("position")[EFFICIENCY_STATS].mean()
     for stat in EFFICIENCY_STATS:
-        avg = df["position"].map(d1_avg[stat])
-        excess = df[stat] - avg
-        df[f"adj_{stat}"] = np.where(excess > 0, avg + excess * trust, df[stat])
+        df[f"adj_{stat}"] = _discount_good_side(df[stat], df["position"].map(d1_avg[stat]), trust, False)
+
+    cfg = SCORING_CONFIG
+    shrunk = {
+        "off_ppp": shrink_to_d1_average(df, "off_ppp", "syn_off_poss", cfg["synergy_prior_off_poss"]),
+        "ssm": shrink_to_d1_average(df, "ssm", "syn_fga", cfg["synergy_prior_off_poss"]),
+        "to_pct": shrink_to_d1_average(df, "to_pct", "syn_off_poss", cfg["synergy_prior_off_poss"]),
+        "def_ppp": shrink_to_d1_average(df, "def_ppp", "syn_def_poss", cfg["synergy_prior_def_poss"]),
+    }
+    for stat, x in shrunk.items():
+        d1 = df[(df["division"] == "D1") & x.notna()]
+        avg = df["position"].map(x[d1.index].groupby(d1["position"]).mean())
+        df[f"adj_{stat}"] = _discount_good_side(x, avg, trust, stat in LOWER_IS_BETTER)
     return df
 
 
 # --------------------------------------------------------------------------- 3
 def percentile_against(values: pd.Series, reference: np.ndarray) -> np.ndarray:
-    """Percentile (0-100) of each value within a reference sample; ties count half."""
-    ref = np.sort(reference)
-    left = np.searchsorted(ref, values.to_numpy(), side="left")
-    right = np.searchsorted(ref, values.to_numpy(), side="right")
-    return 100.0 * (left + right) / (2 * len(ref))
+    """Percentile (0-100) of each value within a reference sample; ties count half. NaN stays NaN."""
+    ref = np.sort(reference[~np.isnan(reference)])
+    vals = values.to_numpy(dtype=float)
+    if len(ref) == 0:
+        return np.full(len(vals), np.nan)
+    left = np.searchsorted(ref, vals, side="left")
+    right = np.searchsorted(ref, vals, side="right")
+    return np.where(np.isnan(vals), np.nan, 100.0 * (left + right) / (2 * len(ref)))
 
 
 def add_percentiles(df: pd.DataFrame) -> pd.DataFrame:
-    """Add pct_* = percentile of adj_* among D1 players at the same position."""
+    """Add pct_* = percentile of adj_* among D1 players at the same position (higher = better)."""
     df = df.copy()
     for stat in ALL_SCORED_STATS:
         df[f"pct_{stat}"] = np.nan
@@ -147,8 +192,8 @@ def add_percentiles(df: pd.DataFrame) -> pd.DataFrame:
         rows = df["position"] == pos
         ref = df[rows & (df["division"] == "D1")]
         for stat in ALL_SCORED_STATS:
-            df.loc[rows, f"pct_{stat}"] = percentile_against(df.loc[rows, f"adj_{stat}"],
-                                                             ref[f"adj_{stat}"].to_numpy())
+            pct = percentile_against(df.loc[rows, f"adj_{stat}"], ref[f"adj_{stat}"].to_numpy(dtype=float))
+            df.loc[rows, f"pct_{stat}"] = 100 - pct if stat in LOWER_IS_BETTER else pct
     return df
 
 
@@ -156,13 +201,17 @@ def add_percentiles(df: pd.DataFrame) -> pd.DataFrame:
 def translation_score(df: pd.DataFrame) -> pd.Series:
     """Position-weighted mean of pct_* stats (0-100), shrunk toward a prior for low minutes.
 
+    Missing stats (no Synergy data) are skipped and the remaining weights renormalized.
     reliability = min(1, season_minutes / full_trust_minutes)
     score = reliability * weighted_pct + (1 - reliability) * prior
     """
-    raw = pd.Series(0.0, index=df.index)
+    raw = pd.Series(np.nan, index=df.index)
     for pos, weights in POSITION_WEIGHTS.items():
         rows = df["position"] == pos
-        raw[rows] = sum(w * df.loc[rows, f"pct_{s}"] for s, w in weights.items())
+        pct = df.loc[rows, [f"pct_{s}" for s in weights]].to_numpy(dtype=float)
+        w = np.array(list(weights.values()))
+        have = ~np.isnan(pct)
+        raw[rows] = np.nansum(pct * w, axis=1) / (have * w).sum(axis=1)
     rel = (df["season_minutes"] / SCORING_CONFIG["full_trust_minutes"]).clip(upper=1.0)
     return rel * raw + (1 - rel) * SCORING_CONFIG["reliability_prior"]
 
@@ -198,9 +247,13 @@ def score_players(players: pd.DataFrame) -> pd.DataFrame:
 
 # --------------------------------------------------------------------------- explain
 def format_stat(stat: str, value: float) -> str:
-    """Human-readable stat value: percentages as 41.2%, ratios 2 decimals, rates 1 decimal."""
+    """Human-readable stat value: 41.2%, ratios 2 decimals, PPP 3 decimals, SSM signed."""
     if stat in PCT_STATS:
         return f"{100 * value:.1f}%"
+    if stat in ("off_ppp", "def_ppp"):
+        return f"{value:.3f}"
+    if stat == "ssm":
+        return f"{value:+.2f}"
     if stat == "ast_to":
         return f"{value:.2f}"
     return f"{value:.1f}"
@@ -212,39 +265,45 @@ def _ordinal(n: float) -> str:
     return f"{n}{suffix}"
 
 
+def _stat_text(stat: str, row: pd.Series, pos: str) -> str:
+    """'<label> <raw> (adjusted <adj>): <how he compares to D1 players at his position>'."""
+    pct = float(row[f"pct_{stat}"])
+    base = f"{STAT_LABELS[stat]} {format_stat(stat, row[stat])} (adjusted {format_stat(stat, row[f'adj_{stat}'])})"
+    if stat in LOWER_IS_BETTER:  # say it in words so a high percentile can't be misread as "high turnovers"
+        return f"{base}: better than {pct:.0f}% of D1 {pos}s"
+    return f"{base}: {_ordinal(pct)} percentile vs D1 {pos}s"
+
+
 def explain_player(row: pd.Series) -> dict[str, Any]:
     """Build the explanation object for one scored player.
 
     top_factors: the 3 weighted stats contributing most above average,
-                 contribution = weight * (percentile - 50).
+                 contribution = weight * (percentile - 50). Missing stats are skipped.
     top_concern: the weakest stat by percentile, including turnover rate.
     """
     pos = row["position"]
-    weights = POSITION_WEIGHTS[pos]
     factors = []
-    for stat, w in weights.items():
+    for stat, w in POSITION_WEIGHTS[pos].items():
+        if pd.isna(row[f"pct_{stat}"]):
+            continue
         pct = float(row[f"pct_{stat}"])
         factors.append({
-            "stat": stat, "label": STAT_LABELS[stat], "weight": w,
+            "stat": stat, "label": STAT_LABELS[stat], "weight": round(w, 4),
             "raw": float(row[stat]), "adjusted": float(row[f"adj_{stat}"]), "percentile": round(pct, 1),
-            "contribution": round(w * (pct - 50), 2),
-            "text": f"{STAT_LABELS[stat]} {format_stat(stat, row[stat])} "
-                    f"(adjusted {format_stat(stat, row[f'adj_{stat}'])}): "
-                    f"{_ordinal(pct)} percentile vs D1 {pos}s",
+            "contribution": round(w * (pct - 50), 2), "text": _stat_text(stat, row, pos),
         })
     top = sorted(factors, key=lambda f: f["contribution"], reverse=True)[:3]
 
-    # Concern: lowest "goodness" percentile. For turnovers, goodness = 100 - pct.
+    # Concern: lowest percentile (all percentiles are higher = better), including turnovers per 40.
     candidates = [(f["percentile"], f["stat"]) for f in factors]
-    candidates.append((100 - float(row["pct_tov_per40"]), "tov_per40"))
+    candidates.append((float(row["pct_tov_per40"]), "tov_per40"))
     goodness, stat = min(candidates)
-    if stat == "tov_per40":
-        text = (f"Turnovers per 40 {format_stat(stat, row[stat])} (adjusted "
-                f"{format_stat(stat, row['adj_tov_per40'])}): higher than "
-                f"{row['pct_tov_per40']:.0f}% of D1 {pos}s")
+    raw = f"{STAT_LABELS[stat]} {format_stat(stat, row[stat])}"
+    if stat in LOWER_IS_BETTER:
+        text = (f"{raw} (adjusted {format_stat(stat, row[f'adj_{stat}'])}): "
+                f"{_WORSE_PHRASE[stat]} {100 - goodness:.0f}% of D1 {pos}s")
     else:
-        text = (f"{STAT_LABELS[stat]} {format_stat(stat, row[stat])}: only "
-                f"{_ordinal(goodness)} percentile vs D1 {pos}s")
+        text = f"{raw}: only {_ordinal(goodness)} percentile vs D1 {pos}s"
     concern = {"stat": stat, "label": STAT_LABELS[stat], "percentile": round(goodness, 1), "text": text}
 
     notes = [f"Level multiplier {row['level_mult']:.2f} ({row['division']}, "
@@ -252,4 +311,6 @@ def explain_player(row: pd.Series) -> dict[str, Any]:
     if row["season_minutes"] < SCORING_CONFIG["full_trust_minutes"]:
         notes.append(f"Small sample: {row['season_minutes']:.0f} season minutes, "
                      f"Translation pulled toward {SCORING_CONFIG['reliability_prior']:.0f}")
+    if pd.isna(row["off_ppp"]):
+        notes.append("No Synergy data: scored on box-score stats only")
     return {"top_factors": top, "top_concern": concern, "notes": notes}

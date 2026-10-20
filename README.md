@@ -62,7 +62,8 @@ Useful scripts:
 | `python -m scripts.evaluate_scoring` | Acceptance check (planted gems in top 50) and top 10 with explanations |
 | `python -m scripts.try_queries ["query"]` | Parse and search from the terminal |
 | `python -m scripts.warm_cache [n]` | Pre-generate reports for the top n players (run before a demo) |
-| `pytest -q` | 92 tests: scoring math, parser fallback, report fact-check, API |
+| `python -m scripts.import_synergy_pdfs <folder> [--load]` | Parse real Synergy PDF exports, check every rule, optionally store them |
+| `pytest -q` | 109 tests: scoring math, Synergy tables and PDF parser, parser fallback, report fact-check, API |
 
 ### Without an API key
 
@@ -86,8 +87,15 @@ All constants live in `scout/config.py` (`SCORING_CONFIG`, `POSITION_WEIGHTS`) a
      **above** the D1 position average is discounted. Strong numbers against weak competition
      are trusted less; weak numbers get no free pass.
 3. **Translation (0–100).** The adjusted stats become percentiles against **D1 players at the
-   same position**, then a position-weighted mean. PG weights favor AST/TO, AST per 40, TS% and
-   3P%. Bigs favor rebounding, blocks and TS%. Players under 600 season minutes are pulled toward 40.
+   same position**, then a position-weighted mean. Percentiles always mean "higher = better",
+   so for turnovers and points allowed it's the share of D1 players he beats.
+   - **68% box score:** PG weights favor AST/TO, AST per 40, TS% and 3P%; bigs favor rebounding,
+     blocks and TS%.
+   - **32% Synergy:** points per possession (10%), shot-making over expected/SSM (8%), turnover
+     rate (4%), and points allowed per possession on defense (10%). Small Synergy samples are pulled
+     toward the D1 position average first (50 offensive / 100 defensive phantom possessions).
+   - Players without Synergy data are scored on the box-score part alone.
+   - Players under 600 season minutes are pulled toward 40.
 4. **Attention (0–100).** A percentile blend: 40% recruiting stars, 35% log followers, 25% news mentions (90 days).
 5. **Underrated (0–100)** = `(Translation − Attention + 100) / 2`. 50 means fairly rated.
 6. **Ranking gate.** When sorting by Underrated, only players with Translation ≥ 50 rank.
@@ -96,11 +104,40 @@ All constants live in `scout/config.py` (`SCORING_CONFIG`, `POSITION_WEIGHTS`) a
 7. **Explanations.** The top 3 factors are ranked by `weight × (percentile − 50)`. The top
    concern is the weakest stat, including turnover rate.
 
-**Validation on synthetic data:** all 15 planted gems rank in the top 50 (target 10); 4 of 10
-decoys do with the gate. This proves the pipeline is wired correctly and the adjustments push in
+**Validation on synthetic data:** all 15 planted gems rank in the top 50 (target 10), and with
+the Synergy stats they all sit in the top 16 (box score alone left two at #18 and #29). 4 of 10
+decoys reach the top 50 with the gate. This proves the pipeline is wired correctly and the adjustments push in
 the right direction. It does **not** prove the weights are right, because the gems were built
 with an efficiency edge and the weights reward efficiency. Real validation would need real
 transfer outcomes.
+
+## Synergy-format data
+
+Each player has two Synergy-style tables (offense and defense) with the exact layout of Synergy's
+*Player Details > Overall* export: 12 situations (All Possessions, Transition, Half Court,
+Out of Bounds End/Side, After Time Outs, Last 4 Sec., vs Man/Zone, Press and its splits) by
+22 columns (POSS, %TIME, %TIME RANK, PTS, PPP, PPP RANK, RATING, FG ATT/MADE/MISS, FG%, EFG%,
+SSQ, PPS, SSM, TS%, TSA, TO%, %FT, FTA/FGA, %SF, SCORE%). Only the *layout* came from a real
+export. No real numbers are in this repo.
+
+- **Synthetic generation** (`scout/synergy.py`) builds integer counts from each player's box-score
+  season totals, then splits them into situations. The tables obey every rule found in real
+  exports: PPP = PTS/POSS, SSM = PPS − SSQ, TS% = PTS/(2·TSA), %TIME = POSS / parent, and
+  Transition + Half Court = All, Man + Zone = Half Court, To Transition + To Half Court = Press.
+  `check_identities()` verifies all 14,400 rows on every rebuild.
+- **Real exports** (`scout/synergy_pdf.py`): save a player's Overall page (offense and defense)
+  as PDF into a folder **outside the repo**, then run
+  `python -m scripts.import_synergy_pdfs <folder>`. It parses each file, checks the same rules,
+  and with `--load` stores the tables in DuckDB (`data/` is gitignored, and so are `*.pdf`).
+  Tested on real exports: zero rule violations.
+- **What real data still needs:** the PDFs carry only Synergy stats. Scoring real players also
+  needs a box-score/roster source (height, position, division, per-game stats) behind the
+  `DataSource` interface, joined on player.
+- **Not yet covered:** Synergy's play-type view (Spot Up, P&R Ball Handler, Post-Up, ...).
+- **RATING thresholds** (Excellent ≥ 85, Very Good ≥ 65, Good ≥ 45, Average ≥ 30,
+  Below Average ≥ 10) are approximated from real examples, not from Synergy documentation.
+- **Synergy ranks here** are percentiles across all 600 synthetic players, before any level
+  adjustment, as in Synergy. Scoring uses its own level-adjusted D1 percentiles.
 
 ## Report fact-check
 

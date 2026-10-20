@@ -82,7 +82,8 @@ def create_app(backend: SearchBackend | None = None, db_path: Path | str = DB_PA
         chart = [{"stat": s, "label": STAT_LABELS[s], "percentile": round(float(row[f"pct_{s}"]), 1),
                   "weight": w} for s, w in POSITION_WEIGHTS[pos].items()]
         chart.append({"stat": "tov_per40", "label": "Turnover avoidance",
-                      "percentile": round(100 - float(row["pct_tov_per40"]), 1), "weight": 0.0})
+                      "percentile": round(float(row["pct_tov_per40"]), 1), "weight": 0.0})
+        chart = [c for c in chart if c["percentile"] == c["percentile"]]  # drop NaN (no Synergy data)
         return {
             "summary": player_summary(row),
             "raw": {k: to_python(row[k]) for k in RAW_FIELDS},
@@ -92,6 +93,7 @@ def create_app(backend: SearchBackend | None = None, db_path: Path | str = DB_PA
                           "ts_pct", "three_pct_adj", "ft_pct", "ast_to"]},
             "percentiles_vs_d1_position": chart,
             "explanation": explain_player(row),
+            "synergy": request.app.state.backend.get_synergy(player_id),
         }
 
     @app.post("/players/{player_id}/report")

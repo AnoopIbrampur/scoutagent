@@ -31,7 +31,8 @@ import pandas as pd
 
 from scout.config import DATA_DIR, SEED_PLANTED_CSV, SEED_PLAYERS_CSV
 from scout.data_sources import SeedDataSource
-from scout.db import get_connection, load_players
+from scout.db import get_connection, load_players, load_synergy
+from scout.synergy import check_identities, generate_synergy
 
 SEED = 42
 
@@ -299,10 +300,18 @@ def main() -> None:
     players.to_csv(SEED_PLAYERS_CSV, index=False)
     planted.to_csv(SEED_PLANTED_CSV, index=False)
 
+    offense, defense = generate_synergy(players, seed=SEED)
+    problems = check_identities(offense) + check_identities(defense)
+    if problems:
+        raise RuntimeError(f"Synergy tables broke {len(problems)} rules, e.g. {problems[:3]}")
+
     source = SeedDataSource(SEED_PLAYERS_CSV)
     with get_connection() as con:
         n = load_players(con, source.fetch_players(), planted)
+        load_synergy(con, offense, defense)
     print(f"Loaded {n} players into DuckDB ({len(planted)} planted rows in planted_gems).")
+    print(f"Synergy-format tables: {len(offense)} offense + {len(defense)} defense rows "
+          "(12 situations per player), all rules consistent.")
     print_summary(players, planted)
 
 

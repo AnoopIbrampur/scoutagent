@@ -11,8 +11,9 @@ from __future__ import annotations
 import pandas as pd
 
 from scout.config import SCORING_CONFIG
-from scout.db import fetch_planted, fetch_players, get_connection
+from scout.db import fetch_planted, fetch_players, fetch_synergy, get_connection
 from scout.scoring import explain_player, score_players
+from scout.synergy import attach_synergy
 
 TOP_N = 50
 
@@ -20,8 +21,8 @@ TOP_N = 50
 def main() -> None:
     """Score everything, print the acceptance check and the top 10 with explanations."""
     with get_connection(read_only=True) as con:
-        players, planted = fetch_players(con), fetch_planted(con)
-    scored = score_players(players).merge(planted, on="player_id", how="left")
+        players, planted, synergy = fetch_players(con), fetch_planted(con), fetch_synergy(con)
+    scored = score_players(attach_synergy(players, *synergy)).merge(planted, on="player_id", how="left")
     scored["kind"] = scored["kind"].fillna("normal")
     scored = scored.sort_values("underrated_score", ascending=False).reset_index(drop=True)
     scored["rank"] = scored.index + 1
