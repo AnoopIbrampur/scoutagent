@@ -16,15 +16,24 @@ from pathlib import Path
 
 import pandas as pd
 
-from scout.synergy import ALL_SITUATIONS, PERCENT_KEYS, RANK_KEYS, STAT_KEYS, check_identities
+from scout.synergy import (
+    ALL_PLAYTYPES, ALL_SITUATIONS, OFFENSE_SITUATIONS, PERCENT_KEYS, PLAYTYPE_ALIASES, STAT_KEYS,
+    check_identities, check_playtypes,
+)
 
 _RATING_WORDS = {"Excellent", "Good", "Average", "Poor"}
 _RATING_PREFIX = {"Very", "Below", "Above"}
 _HEADER = re.compile(r"^(?P<name>.+?) - (?P<team>.+?), (?P<comp>COLLEGE (?:MEN|WOMEN).*)$")
 _GAMES = re.compile(r"Games played:\s*(\d+)")
 _ICON = re.compile(r"[\ue000-\uf8ff]")
-# Longest names first so "Overall Half Court" doesn't match a shorter label.
-_SITUATIONS = sorted(ALL_SITUATIONS, key=len, reverse=True)
+# Row labels (Overall view + play types + play-type aliases), longest first so
+# "Overall Half Court" doesn't match a shorter label. Aliases map to canonical names.
+_CANONICAL = {n: n for n in ALL_SITUATIONS | ALL_PLAYTYPES} | PLAYTYPE_ALIASES
+_SITUATIONS = sorted(_CANONICAL, key=len, reverse=True)
+_OVERALL_ONLY = set(ALL_SITUATIONS) - {"Transition"}
+
+
+TABLE_KEYS = ("offense", "defense", "playtypes_offense", "playtypes_defense")
 
 
 class SynergyParseError(ValueError):
@@ -38,6 +47,7 @@ class SynergyExport:
     player: str
     team: str
     side: str  # "offense" or "defense"
+    view: str  # "overall" or "playtypes"
     games: int | None
     table: pd.DataFrame  # columns: situation + STAT_KEYS
 
@@ -70,7 +80,7 @@ def parse_row(line: str) -> dict | None:
     cells = head + [rating] + rest
     if len(cells) != len(STAT_KEYS):
         raise SynergyParseError(f"expected {len(STAT_KEYS)} cells, got {len(cells)}: {line!r}")
-    row = {"situation": situation}
+    row = {"situation": _CANONICAL[situation]}
     for key, token in zip(STAT_KEYS, cells):
         row[key] = _value(token, key)
     row["rating"] = None if row["rating"] == "-" or pd.isna(row["rating"]) else row["rating"]
@@ -92,9 +102,12 @@ def parse_text(text: str) -> SynergyExport:
     for key in STAT_KEYS:
         if key != "rating":
             table[key] = pd.to_numeric(table[key])
-    side = "defense" if "Man Defense" in set(table["situation"]) else "offense"
+    names = set(table["situation"])
+    view = "overall" if names & _OVERALL_ONLY else "playtypes"
+    # Defense: the Overall view has "Man Defense"; the export URL ends in offense=false.
+    side = "defense" if "Man Defense" in names or "offense=false" in text else "offense"
     games = _GAMES.search(text)
-    return SynergyExport(player=header["name"].title(), team=header["team"].title(), side=side,
+    return SynergyExport(player=header["name"].title(), team=header["team"].title(), side=side, view=view,
                          games=int(games.group(1)) if games else None, table=table)
 
 
@@ -125,19 +138,36 @@ class SynergyPdfSource:
         self.folder = Path(folder)
 
     def load(self) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
-        """Return (offense, defense, problems). Problems include parse failures and rule violations."""
-        frames: dict[str, list[pd.DataFrame]] = {"offense": [], "defense": []}
+        """Overall view only: (offense, defense, problems). See load_all for play types too."""
+        tables, problems, _ = self.load_all()
+        return tables["offense"], tables["defense"], problems
+
+    def load_all(self) -> tuple[dict[str, pd.DataFrame], list[str], list[SynergyExport]]:
+        """All exports in the folder.
+
+        Returns (tables, problems, exports). tables has keys offense, defense,
+        playtypes_offense, playtypes_defense (empty if none). Problems include
+        parse failures, row-rule violations, and play types that don't add up to
+        the Overall table.
+        """
+        cols = ["player_id", "situation"] + STAT_KEYS
+        frames: dict[str, list[pd.DataFrame]] = {k: [] for k in TABLE_KEYS}
         problems: list[str] = []
+        exports: list[SynergyExport] = []
         for path in sorted(self.folder.glob("*.pdf")):
             try:
                 exp = parse_pdf(path)
             except SynergyParseError as e:
                 problems.append(f"{path.name}: {e}")
                 continue
-            t = exp.table.assign(player_id=player_key(exp.player, exp.team))
-            frames[exp.side].append(t[["player_id", "situation"] + STAT_KEYS])
-        out = [pd.concat(frames[s], ignore_index=True) if frames[s] else pd.DataFrame(columns=["player_id", "situation"] + STAT_KEYS)
-               for s in ("offense", "defense")]
-        for side, t in zip(("offense", "defense"), out):
-            problems += [f"{side}: {e}" for e in check_identities(t)] if not t.empty else []
-        return out[0], out[1], problems
+            exports.append(exp)
+            key = exp.side if exp.view == "overall" else f"playtypes_{exp.side}"
+            frames[key].append(exp.table.assign(player_id=player_key(exp.player, exp.team))[cols])
+        tables = {k: pd.concat(v, ignore_index=True) if v else pd.DataFrame(columns=cols) for k, v in frames.items()}
+        for side in ("offense", "defense"):
+            if not tables[side].empty:
+                problems += [f"{side}: {e}" for e in check_identities(tables[side])]
+            pt = tables[f"playtypes_{side}"]
+            if not pt.empty:
+                problems += [f"playtypes_{side}: {e}" for e in check_playtypes(pt, tables[side])]
+        return tables, problems, exports

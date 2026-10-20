@@ -23,11 +23,13 @@ from typing import Any
 import duckdb
 import pandas as pd
 
+import os
+
 from scout.config import DB_PATH, SCORING_CONFIG
-from scout.db import fetch_players, fetch_synergy, get_connection
+from scout.db import fetch_playtypes, fetch_players, fetch_real_players, fetch_synergy, get_connection
 from scout.query_parser import SearchFilters, inches_to_str
 from scout.scoring import explain_player, score_players
-from scout.synergy import STAT_KEYS, attach_synergy
+from scout.synergy import STAT_KEYS, attach_synergy, top_playtypes
 
 # Which percentile columns each skill tag maps to (all percentiles are higher = better).
 EMPHASIS_STATS: dict[str, list[str]] = {
@@ -67,7 +69,7 @@ def player_summary(row: pd.Series) -> dict[str, Any]:
             "height_in", "class_year", "translation_score", "attention_score", "underrated_score"]
     out = {k: to_python(row[k]) for k in keys}
     for k in ("translation_score", "attention_score", "underrated_score"):
-        out[k] = round(out[k], 1)
+        out[k] = None if out[k] is None else round(out[k], 1)  # None = unknown (no attention data)
     out["height"] = inches_to_str(int(row["height_in"]))
     return out
 
@@ -84,12 +86,24 @@ class SearchBackend(ABC):
         """A player's Synergy situational rows (offense and defense), JSON-safe, or None."""
         if self.synergy is None:
             return None
+        tables = dict(zip(("offense", "defense"), self.synergy)) | self.playtypes
         out = {}
-        for side, table in zip(("offense", "defense"), self.synergy):
+        for name, table in tables.items():
             rows = table[table["player_id"] == player_id]
-            out[side] = [{"situation": r["situation"], **{k: to_python(r[k]) for k in STAT_KEYS}}
+            out[name] = [{"situation": r["situation"], **{k: to_python(r[k]) for k in STAT_KEYS}}
                          for _, r in rows.iterrows()]
-        return out if out["offense"] or out["defense"] else None
+        return out if out.get("offense") or out.get("defense") else None
+
+    def playtype_summary(self, player_id: str, n: int = 3) -> list[dict[str, Any]]:
+        """His n most-used offensive play types (10+ possessions), formatted for report facts."""
+        table = self.playtypes.get("playtypes_offense")
+        if table is None or table.empty:
+            return []
+        return [{
+            "play_type": r["situation"], "share_of_possessions": f"{100 * r['pct_time']:.1f}%",
+            "possessions": int(r["poss"]), "points_per_possession": round(float(r["ppp"]), 3),
+            "rating": r["rating"] if isinstance(r["rating"], str) else None,
+        } for _, r in top_playtypes(table, player_id, n).iterrows()]
 
     def get_player(self, player_id: str) -> pd.Series | None:
         """Return the full scored row for one player, or None."""
@@ -99,14 +113,33 @@ class DuckDBSearchBackend(SearchBackend):
     """Scores all players on load, then filters with DuckDB SQL over the scored table."""
 
     def __init__(self, db_path: Path | str = DB_PATH, players: pd.DataFrame | None = None,
-                 synergy: tuple[pd.DataFrame, pd.DataFrame] | None = None) -> None:
-        """Load from DuckDB, or use the given players (+ optional Synergy offense/defense tables)."""
+                 synergy: tuple[pd.DataFrame, pd.DataFrame] | None = None,
+                 playtypes: dict[str, pd.DataFrame] | None = None, dataset: str | None = None) -> None:
+        """Load from DuckDB, or use the given players (+ optional Synergy tables).
+
+        dataset: "synthetic" (default) or "real" (env SCOUT_DATASET). Real mode serves the
+        players loaded by scripts.load_real_players and compares them against the
+        synthetic D1 pool, because percentiles need a D1 baseline.
+        """
+        self.dataset = dataset or os.getenv("SCOUT_DATASET", "synthetic")
+        reference, baseline = None, None
         if players is None:
             with get_connection(db_path, read_only=True) as con:
-                players = fetch_players(con)
-                synergy = fetch_synergy(con)
+                if self.dataset == "real":
+                    try:
+                        players = fetch_real_players(con)
+                    except duckdb.CatalogException as e:
+                        raise RuntimeError("No real players loaded. Run: python -m scripts.load_real_players") from e
+                    synergy, playtypes = fetch_synergy(con, "synergy_real"), fetch_playtypes(con, "synergy_real")
+                    synth = fetch_players(con)
+                    reference = attach_synergy(synth[synth["division"] == "D1"], *fetch_synergy(con))
+                    baseline = "synthetic D1"
+                else:
+                    players, synergy, playtypes = fetch_players(con), fetch_synergy(con), fetch_playtypes(con)
         self.synergy = synergy if synergy and synergy[0] is not None else None
-        self.scored = score_players(attach_synergy(players, *(self.synergy or (None, None))))
+        self.playtypes = playtypes or {}
+        self.scored = score_players(attach_synergy(players, *(self.synergy or (None, None))),
+                                    reference=reference, baseline_label=baseline)
         self._con = duckdb.connect()  # in-memory; avoids file locks with other processes
         self._con.register("player_scores", self.scored)
 
@@ -147,14 +180,15 @@ class DuckDBSearchBackend(SearchBackend):
             rank = (1 - EMPHASIS_WEIGHT) * base + EMPHASIS_WEIGHT * emph
         else:
             emph, rank = pd.Series(float("nan"), index=matches.index), base
-        matches = matches.assign(emphasis_score=emph, rank_score=rank).sort_values("rank_score", ascending=False)
+        matches = matches.assign(emphasis_score=emph, rank_score=rank).sort_values(
+            "rank_score", ascending=False, na_position="last")
 
         results = []
         for _, row in matches.head(limit).iterrows():
             exp = explain_player(row)
             item = player_summary(row)
             item.update(
-                rank_score=round(float(row["rank_score"]), 1),
+                rank_score=to_python(round(float(row["rank_score"]), 1)),
                 emphasis_score=None if pd.isna(row["emphasis_score"]) else round(float(row["emphasis_score"]), 1),
                 top_factor=exp["top_factors"][0]["text"],
                 explanation=exp,
@@ -172,12 +206,24 @@ class DuckDBSearchBackend(SearchBackend):
         """A player's Synergy situational rows (offense and defense), JSON-safe, or None."""
         if self.synergy is None:
             return None
+        tables = dict(zip(("offense", "defense"), self.synergy)) | self.playtypes
         out = {}
-        for side, table in zip(("offense", "defense"), self.synergy):
+        for name, table in tables.items():
             rows = table[table["player_id"] == player_id]
-            out[side] = [{"situation": r["situation"], **{k: to_python(r[k]) for k in STAT_KEYS}}
+            out[name] = [{"situation": r["situation"], **{k: to_python(r[k]) for k in STAT_KEYS}}
                          for _, r in rows.iterrows()]
-        return out if out["offense"] or out["defense"] else None
+        return out if out.get("offense") or out.get("defense") else None
+
+    def playtype_summary(self, player_id: str, n: int = 3) -> list[dict[str, Any]]:
+        """His n most-used offensive play types (10+ possessions), formatted for report facts."""
+        table = self.playtypes.get("playtypes_offense")
+        if table is None or table.empty:
+            return []
+        return [{
+            "play_type": r["situation"], "share_of_possessions": f"{100 * r['pct_time']:.1f}%",
+            "possessions": int(r["poss"]), "points_per_possession": round(float(r["ppp"]), 3),
+            "rating": r["rating"] if isinstance(r["rating"], str) else None,
+        } for _, r in top_playtypes(table, player_id, n).iterrows()]
 
     def get_player(self, player_id: str) -> pd.Series | None:
         rows = self.scored[self.scored["player_id"] == player_id]

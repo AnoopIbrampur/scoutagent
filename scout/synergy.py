@@ -27,6 +27,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from scout.config import SYNERGY_RATING_CUTOFFS
+
 # (snake_case key, Synergy column label) in export order.
 SYNERGY_COLUMNS: list[tuple[str, str]] = [
     ("poss", "POSS"), ("pct_time", "%TIME"), ("pct_time_rank", "%TIME RANK"), ("pts", "PTS"),
@@ -48,6 +50,17 @@ OFFENSE_SITUATIONS = [
 # Defense uses the same rows, except man/zone are labelled from the defender's side.
 DEFENSE_SITUATIONS = [s.replace("Against Man", "Man Defense").replace("Against Zone", "Zone Defense")
                       for s in OFFENSE_SITUATIONS]
+# Play-type view. Names follow Synergy's categories; the exact export layout is ASSUMED
+# to match the Overall view (same 22 columns, one row per play type) until a real
+# play-type export confirms it. Play types partition all possessions.
+OFFENSE_PLAYTYPES = ["Transition", "Spot Up", "P&R Ball Handler", "Isolation", "Post Up", "P&R Roll Man",
+                     "Cut", "Off Screen", "Hand Off", "Offensive Rebound", "Miscellaneous"]
+DEFENSE_PLAYTYPES = [t for t in OFFENSE_PLAYTYPES if t != "Transition"]
+PLAYTYPE_ALIASES = {"Post-Up": "Post Up", "Spot-Up": "Spot Up", "Putbacks": "Offensive Rebound",
+                    "Put Backs": "Offensive Rebound", "Offensive Rebounds (put backs)": "Offensive Rebound",
+                    "Misc": "Miscellaneous", "Handoff": "Hand Off", "Hand-Off": "Hand Off",
+                    "PnR Ball Handler": "P&R Ball Handler", "PnR Roll Man": "P&R Roll Man"}
+ALL_PLAYTYPES = set(OFFENSE_PLAYTYPES)
 ALL_SITUATIONS = set(OFFENSE_SITUATIONS) | set(DEFENSE_SITUATIONS)
 
 PARENT = {
@@ -67,14 +80,55 @@ PARTITIONS = [  # (parent, child_a, child_b): child_a + child_b == parent
 MIN_POSS_FOR_RANK = 10  # Synergy shows "-" for ranks on tiny samples
 
 
-def rating_for(rank: float) -> str | None:
-    """Synergy-style label from a 0-100 PPP rank. Thresholds approximated from real exports."""
+RATING_TIERS = ["Excellent", "Very Good", "Good", "Average", "Below Average", "Poor"]  # best first
+
+
+def rating_for(rank: float, cutoffs: list[tuple[float, str]] | None = None) -> str | None:
+    """Synergy-style label from a 0-100 PPP rank, using config.SYNERGY_RATING_CUTOFFS."""
     if pd.isna(rank):
         return None
-    for floor, label in ((85, "Excellent"), (65, "Very Good"), (45, "Good"), (30, "Average"), (10, "Below Average")):
+    for floor, label in (cutoffs or SYNERGY_RATING_CUTOFFS):
         if rank >= floor:
             return label
     return "Poor"
+
+
+def calibrate_ratings(tables: list[pd.DataFrame],
+                      cutoffs: list[tuple[float, str]] | None = None) -> pd.DataFrame:
+    """What real exports say about each tier's cutoff.
+
+    For each tier, the cutoff must be above every rank seen with a LOWER tier
+    and at or below every rank seen with THIS or a higher tier. Returns one row
+    per tier: observed ranks, the feasible cutoff range (low, high], the
+    configured cutoff, and whether it fits. More exports = tighter ranges.
+    """
+    cutoffs = cutoffs or SYNERGY_RATING_CUTOFFS
+    pairs = pd.concat([t[["ppp_rank", "rating"]] for t in tables], ignore_index=True).dropna()
+    current = {label: floor for floor, label in cutoffs}
+    rows = []
+    for i, tier in enumerate(RATING_TIERS[:-1]):  # "Poor" has no cutoff
+        at_or_above = pairs[pairs["rating"].isin(RATING_TIERS[: i + 1])]["ppp_rank"]
+        below = pairs[pairs["rating"].isin(RATING_TIERS[i + 1:])]["ppp_rank"]
+        seen = pairs[pairs["rating"] == tier]["ppp_rank"]
+        low = float(below.max()) if len(below) else 0.0
+        high = float(at_or_above.min()) if len(at_or_above) else 100.0
+        rows.append({
+            "tier": tier, "examples": len(seen),
+            "ranks_seen": f"{seen.min():.0f}-{seen.max():.0f}" if len(seen) else "none",
+            "cutoff_above": low, "cutoff_at_most": high, "configured": current.get(tier),
+            "fits": low < current.get(tier, -1) <= high and low < high,
+        })
+    return pd.DataFrame(rows)
+
+
+def rating_mismatches(table: pd.DataFrame) -> list[str]:
+    """Rows whose exported RATING disagrees with rating_for(PPP RANK) under the current cutoffs."""
+    out = []
+    for _, r in table.dropna(subset=["ppp_rank", "rating"]).iterrows():
+        mine = rating_for(r["ppp_rank"])
+        if mine != r["rating"]:
+            out.append(f"{r['player_id']}/{r['situation']}: rank {r['ppp_rank']:.0f} is '{r['rating']}' in Synergy, '{mine}' here")
+    return out
 
 
 # --------------------------------------------------------------------------- counts
@@ -104,18 +158,22 @@ def _alloc_made(made: int, att: int, att_child: int, rate_mult: float, rng: np.r
 
 
 def _split(parent: dict[str, float], share: float, eff: float, ssq_mult: float,
-           rng: np.random.Generator) -> dict[str, float]:
+           rng: np.random.Generator, mults: dict[str, float] | None = None) -> dict[str, float]:
     """Draw a child situation holding roughly `share` of the parent's possessions.
 
     eff tilts shooting efficiency (transition > half court > end of clock);
-    ssq_mult tilts expected shot quality the same way.
+    ssq_mult tilts expected shot quality the same way. mults optionally tilts
+    how much of the parent's threes / turnovers / free-throw trips the child
+    gets (play types: a cutter takes no threes, Misc gets extra turnovers).
     """
+    m = {"three": 1.0, "tov": 1.0, "trips": 1.0} | (mults or {})
+    sh = lambda k: float(np.clip(share * m[k], 0.0, 1.0))  # noqa: E731
     c: dict[str, float] = {}
-    for a, m in (("two_a", "two_m"), ("three_a", "three_m")):
-        c[a] = int(rng.binomial(int(parent[a]), share))
-        c[m] = _alloc_made(int(parent[m]), int(parent[a]), int(c[a]), eff, rng)
-    c["tov"] = int(rng.binomial(int(parent["tov"]), share))
-    c["trips"] = int(rng.binomial(int(parent["trips"]), share))
+    for a, mk, frac in (("two_a", "two_m", share), ("three_a", "three_m", sh("three"))):
+        c[a] = int(rng.binomial(int(parent[a]), frac))
+        c[mk] = _alloc_made(int(parent[mk]), int(parent[a]), int(c[a]), eff, rng)
+    c["tov"] = int(rng.binomial(int(parent["tov"]), sh("tov")))
+    c["trips"] = int(rng.binomial(int(parent["trips"]), sh("trips")))
     for k in ("sf", "fto"):  # both are subsets of trips
         c[k] = _alloc_made(int(parent[k]), int(parent["trips"]), c["trips"], 1.0, rng)
     # FTA: at least one per trip in both children.
@@ -158,6 +216,54 @@ def _build_situations(all_row: dict[str, float], defense: bool, guard_like: floa
     rows["Press"] = _split(all_row, rng.uniform(0.01, 0.03) if defense else rng.uniform(0.03, 0.08), 0.97, 0.98, rng)
     rows["To Transition"] = _split(rows["Press"], 0.0 if defense else rng.uniform(0.1, 0.3), 1.1, 1.1, rng)
     rows["To Half Court"] = _minus(rows["Press"], rows["To Transition"])
+    return rows
+
+
+# Half-court play-type mix by position (relative weights; Transition comes from the
+# Overall table). Tuple: (weight PG, SG, SF, PF, C).
+_PT_MIX = {
+    "Spot Up": (18, 32, 32, 22, 6), "P&R Ball Handler": (40, 20, 10, 3, 1), "Isolation": (10, 9, 9, 5, 3),
+    "Post Up": (1, 2, 6, 18, 28), "P&R Roll Man": (1, 1, 3, 14, 20), "Cut": (4, 7, 12, 15, 18),
+    "Off Screen": (4, 10, 7, 2, 1), "Hand Off": (6, 8, 5, 2, 1), "Offensive Rebound": (2, 3, 6, 11, 15),
+    "Miscellaneous": (8, 8, 8, 8, 7),
+}
+_POS_INDEX = {"PG": 0, "SG": 1, "SF": 2, "PF": 3, "C": 4}
+# (efficiency tilt, shot-quality tilt, three share, turnover share, FT-trip share)
+_PT_TILT = {
+    "Spot Up": (1.00, 1.00, 1.8, 0.5, 0.4), "P&R Ball Handler": (0.93, 0.93, 1.0, 1.3, 1.0),
+    "Isolation": (0.90, 0.90, 0.8, 1.2, 1.0), "Post Up": (0.96, 0.97, 0.05, 1.3, 1.5),
+    "P&R Roll Man": (1.12, 1.15, 0.05, 0.8, 1.3), "Cut": (1.20, 1.25, 0.0, 0.6, 1.3),
+    "Off Screen": (0.98, 0.98, 1.5, 0.7, 0.5), "Hand Off": (0.95, 0.96, 1.2, 0.9, 0.7),
+    "Offensive Rebound": (1.10, 1.20, 0.0, 0.5, 1.5), "Miscellaneous": (0.70, 0.80, 0.3, 2.0, 1.5),
+}
+# Allocation order: Spot Up last, so it absorbs leftover threes like it does in real data.
+_PT_ORDER = ["Cut", "Offensive Rebound", "P&R Roll Man", "Post Up", "Isolation", "P&R Ball Handler",
+             "Hand Off", "Off Screen", "Miscellaneous", "Spot Up"]
+
+
+def _build_playtypes(overall: dict[str, dict[str, float]], position: str, defense: bool,
+                     rng: np.random.Generator) -> dict[str, dict[str, float]]:
+    """Split a player's possessions into play types that add up exactly to All Possessions.
+
+    Offense: Transition is copied from the Overall table; half-court possessions are
+    split by a position-based mix. Defense: no transition; all possessions are split
+    by the mix of the position he guards.
+    """
+    rows: dict[str, dict[str, float]] = {}
+    if defense:
+        remaining = dict(overall["All Possessions"])
+    else:
+        rows["Transition"] = dict(overall["Transition"])
+        remaining = dict(overall["Overall Half Court"])
+    weights = {t: _PT_MIX[t][_POS_INDEX[position]] * float(rng.lognormal(0, 0.25)) for t in _PT_ORDER}
+    for i, t in enumerate(_PT_ORDER):
+        if i == len(_PT_ORDER) - 1:
+            rows[t] = remaining
+            break
+        share = weights[t] / sum(weights[u] for u in _PT_ORDER[i:])
+        eff, ssq, three, tov, trips = _PT_TILT[t]
+        rows[t] = _split(remaining, share, eff, ssq, rng, {"three": three, "tov": tov, "trips": trips})
+        remaining = _minus(remaining, rows[t])
     return rows
 
 
@@ -261,23 +367,45 @@ def add_ranks(table: pd.DataFrame, defense: bool) -> pd.DataFrame:
 
 
 def generate_synergy(players: pd.DataFrame, seed: int = 42) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(offense, defense) tables, 12 situations per player, derived from box scores."""
+    """(offense, defense) Overall tables, 12 situations per player, derived from box scores."""
+    t = generate_synergy_tables(players, seed)
+    return t["offense"], t["defense"]
+
+
+def generate_synergy_tables(players: pd.DataFrame, seed: int = 42) -> dict[str, pd.DataFrame]:
+    """All four tables: offense, defense (Overall view), playtypes_offense, playtypes_defense."""
     from scout.scoring import estimate_fga  # local import: scoring imports nothing from here
 
     rng = np.random.default_rng(seed + 1)
+    rng_pt = np.random.default_rng(seed + 2)  # separate stream: play types don't change Overall tables
     fga_pg = estimate_fga(players)
     # Defensive skill proxy: steals + blocks per 40, relative to position, plus noise.
     per40 = (players["steals_pg"] + players["blocks_pg"]) * 40 / players["minutes_pg"].clip(lower=1)
     z = per40.groupby(players["position"]).transform(lambda s: (s - s.mean()) / (s.std() or 1))
     d_skill = 0.6 * z + rng.normal(0, 0.8, len(players))
 
-    off_rows, def_rows = [], []
+    off_rows, def_rows, pt_off_rows, pt_def_rows = [], [], [], []
     for i, p in players.iterrows():
         off = _build_situations(_offense_counts(p, float(fga_pg[i]), rng), False, GUARD_LIKE[p["position"]], rng)
         dfn = _build_situations(_defense_counts(p, float(d_skill[i]), rng), True, 0.0, rng)
         off_rows += _table(p["player_id"], off, OFFENSE_SITUATIONS)
         def_rows += _table(p["player_id"], dfn, DEFENSE_SITUATIONS)
-    return add_ranks(pd.DataFrame(off_rows), False), add_ranks(pd.DataFrame(def_rows), True)
+        pt_off = _build_playtypes(off, p["position"], False, rng_pt)
+        pt_def = _build_playtypes(dfn, p["position"], True, rng_pt)
+        pt_off_rows += _playtype_table(p["player_id"], pt_off, _poss(off["All Possessions"]), OFFENSE_PLAYTYPES)
+        pt_def_rows += _playtype_table(p["player_id"], pt_def, _poss(dfn["All Possessions"]), DEFENSE_PLAYTYPES)
+    return {
+        "offense": add_ranks(pd.DataFrame(off_rows), False),
+        "defense": add_ranks(pd.DataFrame(def_rows), True),
+        "playtypes_offense": add_ranks(pd.DataFrame(pt_off_rows), False),
+        "playtypes_defense": add_ranks(pd.DataFrame(pt_def_rows), True),
+    }
+
+
+def _playtype_table(player_id: str, rows: dict[str, dict[str, float]], total_poss: int,
+                    names: list[str]) -> list[dict[str, Any]]:
+    """Play-type rows; %TIME is each play type's share of ALL his possessions."""
+    return [{"player_id": player_id, "situation": n, **_metrics(rows[n], total_poss)} for n in names]
 
 
 # --------------------------------------------------------------------------- validation
@@ -314,6 +442,30 @@ def check_identities(table: pd.DataFrame) -> list[str]:
                     if rows.loc[a, col] + rows.loc[b, col] != rows.loc[parent, col]:
                         errors.append(f"{pid}: {a} + {b} != {parent} ({col})")
     return errors
+
+
+def check_playtypes(playtypes: pd.DataFrame, overall: pd.DataFrame) -> list[str]:
+    """Play types must add up to the Overall table's All Possessions row (and obey row rules)."""
+    errors = check_identities(playtypes)
+    allp = overall[overall["situation"] == "All Possessions"].set_index("player_id")
+    sums = playtypes.groupby("player_id")[["poss", "pts", "fg_att", "fg_made"]].sum()
+    for pid, total in sums.iterrows():
+        if pid not in allp.index:
+            errors.append(f"{pid}: play types but no Overall table")
+            continue
+        for col in total.index:
+            if total[col] != allp.loc[pid, col]:
+                errors.append(f"{pid}: play types sum to {total[col]:.0f} {col}, Overall says {allp.loc[pid, col]:.0f}")
+        pt = playtypes[playtypes["player_id"] == pid]
+        if allp.loc[pid, "poss"] and (abs(pt["poss"] / allp.loc[pid, "poss"] - pt["pct_time"]) > 0.0015).any():
+            errors.append(f"{pid}: play-type %TIME != POSS / all possessions")
+    return errors
+
+
+def top_playtypes(playtypes: pd.DataFrame, player_id: str, n: int = 3, min_poss: int = 10) -> pd.DataFrame:
+    """A player's most-used play types (by possessions), for reports and the UI."""
+    pt = playtypes[(playtypes["player_id"] == player_id) & (playtypes["poss"] >= min_poss)]
+    return pt.sort_values("poss", ascending=False).head(n)
 
 
 # --------------------------------------------------------------------------- scoring hook

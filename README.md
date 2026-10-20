@@ -62,8 +62,11 @@ Useful scripts:
 | `python -m scripts.evaluate_scoring` | Acceptance check (planted gems in top 50) and top 10 with explanations |
 | `python -m scripts.try_queries ["query"]` | Parse and search from the terminal |
 | `python -m scripts.warm_cache [n]` | Pre-generate reports for the top n players (run before a demo) |
-| `python -m scripts.import_synergy_pdfs <folder> [--load]` | Parse real Synergy PDF exports, check every rule, optionally store them |
-| `pytest -q` | 109 tests: scoring math, Synergy tables and PDF parser, parser fallback, report fact-check, API |
+| `python -m scripts.import_synergy_pdfs <folder> [--load]` | Parse real Synergy PDF exports (Overall + play types), check every rule, show what they imply about RATING cutoffs |
+| `python -m scripts.load_real_players --pdfs <folder> --template data/roster.csv` | Make a roster CSV pre-filled from the exports |
+| `python -m scripts.load_real_players --pdfs <folder> --roster data/roster.csv` | Load real players (roster + exports), score them, preview rankings |
+| `SCOUT_DATASET=real uvicorn api.main:app --port 8000` | Run the API on real players instead of synthetic ones |
+| `pytest -q` | 129 tests: scoring math, Synergy tables/play types/PDF parser, roster + real mode, parser fallback, report fact-check, API |
 
 ### Without an API key
 
@@ -130,12 +133,38 @@ export. No real numbers are in this repo.
   `python -m scripts.import_synergy_pdfs <folder>`. It parses each file, checks the same rules,
   and with `--load` stores the tables in DuckDB (`data/` is gitignored, and so are `*.pdf`).
   Tested on real exports: zero rule violations.
-- **What real data still needs:** the PDFs carry only Synergy stats. Scoring real players also
-  needs a box-score/roster source (height, position, division, per-game stats) behind the
-  `DataSource` interface, joined on player.
-- **Not yet covered:** Synergy's play-type view (Spot Up, P&R Ball Handler, Post-Up, ...).
-- **RATING thresholds** (Excellent ≥ 85, Very Good ≥ 65, Good ≥ 45, Average ≥ 30,
-  Below Average ≥ 10) are approximated from real examples, not from Synergy documentation.
+- **Play types:** each player also has offense and defense play-type tables (Transition, Spot Up,
+  P&R Ball Handler, Isolation, Post Up, P&R Roll Man, Cut, Off Screen, Hand Off, Offensive Rebound,
+  Miscellaneous; defense has no Transition). They add up exactly to All Possessions
+  (`check_playtypes()`), mixes depend on position, and Cut / Roll Man / putbacks take no threes.
+  The **layout is assumed** to match the Overall view (same 22 columns, one row per play type)
+  until a real play-type export confirms it; the parser also accepts common aliases
+  ("Post-Up", "Putbacks", "Misc"). Reports cite a player's 3 most-used play types.
+- **RATING cutoffs** live in `config.SYNERGY_RATING_CUTOFFS` (Excellent ≥ 85, Very Good ≥ 65,
+  Good ≥ 45, Average ≥ 30, Below Average ≥ 10). Synergy's docs confirm the six tiers and the
+  10-possession minimum for ranks, but not the cutoffs. `import_synergy_pdfs` therefore prints
+  the range each cutoff must fall in, given every rank/rating pair in your exports, and lists
+  any rating the current cutoffs get wrong. Two real exports put Excellent at 80–89 and
+  Below Average at 2–26; every export narrows it further.
+
+### Real players: roster + exports
+
+The Overall export has no height, position, division, minutes or rebounds, so real players
+need a roster CSV (`scout/roster.py`):
+
+1. `python -m scripts.load_real_players --pdfs <folder> --template data/roster.csv` writes one
+   row per exported player, **pre-filled from Synergy**: games, points/game (PTS ÷ games), FG%,
+   FTA/game ((TSA − FGA) ÷ 0.44), FT% ((PTS − PPS × FGA) ÷ FTA), turnovers/game (TO% × POSS).
+2. Fill in the blanks: height (6'2", 6-2 or 74), position, division, conference, minutes,
+   rebounds, assists, steals, blocks, 3PA and 3P%. conference_strength defaults to 0.5.
+   Attention columns are optional: **blank means unknown, not zero**, and Underrated then shows
+   "n/a" instead of rewarding missing data.
+3. `python -m scripts.load_real_players --pdfs <folder> --roster data/roster.csv` validates
+   everything (it names every blank cell), stores the players, and prints their rankings.
+4. `SCOUT_DATASET=real uvicorn api.main:app --port 8000`, and the UI shows a "Real players" banner.
+
+Percentiles need a D1 baseline, so real players are compared against the **synthetic D1 pool**
+until real D1 data is loaded. The UI, explanations and reports say so.
 - **Synergy ranks here** are percentiles across all 600 synthetic players, before any level
   adjustment, as in Synergy. Scoring uses its own level-adjusted D1 percentiles.
 

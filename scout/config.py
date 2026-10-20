@@ -106,3 +106,11 @@ POSITION_WEIGHTS: dict[str, dict[str, float]] = {
 # LLM settings. Timeout is per attempt; the SDK retries 429/5xx/timeouts.
 LLM_TIMEOUT_S = float(os.getenv("SCOUT_LLM_TIMEOUT_S", "30"))
 LLM_MAX_RETRIES = 2
+
+# Synergy RATING tiers by PPP rank (0-100). Synergy's official cutoffs aren't public
+# (its docs confirm the six tiers and a 10-possession minimum for ranks). These are
+# approximations; `python -m scripts.import_synergy_pdfs <folder>` reports the range
+# each cutoff must fall in, given every rank/rating pair seen in real exports.
+SYNERGY_RATING_CUTOFFS: list[tuple[float, str]] = [
+    (85, "Excellent"), (65, "Very Good"), (45, "Good"), (30, "Average"), (10, "Below Average"),
+]  # below the last cutoff: "Poor"

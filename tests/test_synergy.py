@@ -172,3 +172,87 @@ def test_players_without_synergy_still_score(data) -> None:
     assert 0 <= scored.loc["P0001", "translation_score"] <= 100
     from scout.scoring import explain_player
     assert any("No Synergy data" in n for n in explain_player(scored.loc["P0001"])["notes"])
+
+
+# --- rating cutoffs --------------------------------------------------------
+def _pairs(*pairs):
+    return pd.DataFrame([{"player_id": "x", "situation": "s", "ppp_rank": r, "rating": t} for r, t in pairs])
+
+
+def test_calibration_ranges_from_examples() -> None:
+    from scout.synergy import calibrate_ratings
+    cal = calibrate_ratings([_pairs((91, "Excellent"), (89, "Excellent"), (79, "Very Good"), (27, "Below Average"))])
+    exc = cal.set_index("tier").loc["Excellent"]
+    assert (exc["cutoff_above"], exc["cutoff_at_most"], exc["fits"]) == (79.0, 89.0, True)
+
+
+def test_calibration_flags_a_bad_cutoff() -> None:
+    from scout.synergy import calibrate_ratings
+    # Synergy called rank 80 "Excellent", so a cutoff of 85 can't be right.
+    cal = calibrate_ratings([_pairs((80, "Excellent"), (70, "Very Good"))])
+    assert not cal.set_index("tier").loc["Excellent", "fits"]
+
+
+def test_rating_mismatches() -> None:
+    from scout.synergy import rating_mismatches
+    assert rating_mismatches(_pairs((91, "Excellent"))) == []
+    assert len(rating_mismatches(_pairs((80, "Excellent")))) == 1
+
+
+# --- play types ------------------------------------------------------------
+@pytest.fixture(scope="module")
+def tables(data):
+    from scout.synergy import generate_synergy_tables
+    return generate_synergy_tables(data[0], seed=42)
+
+
+def test_playtypes_add_up_and_leave_overall_unchanged(data, tables) -> None:
+    from scout.synergy import DEFENSE_PLAYTYPES, OFFENSE_PLAYTYPES, check_playtypes
+    _, _, offense, _ = data
+    pd.testing.assert_frame_equal(tables["offense"], offense)
+    assert check_playtypes(tables["playtypes_offense"], tables["offense"]) == []
+    assert check_playtypes(tables["playtypes_defense"], tables["defense"]) == []
+    one = tables["playtypes_offense"][tables["playtypes_offense"].player_id == "P0001"]
+    assert list(one.situation) == OFFENSE_PLAYTYPES
+    assert "Transition" not in DEFENSE_PLAYTYPES
+
+
+def test_playtype_realism(data, tables) -> None:
+    players = data[0].set_index("player_id")
+    pt = tables["playtypes_offense"].assign(position=lambda d: d.player_id.map(players["position"]))
+    share = pt.groupby(["position", "situation"])["poss"].sum() / pt.groupby("position")["poss"].sum()
+    assert share["PG", "P&R Ball Handler"] > 0.25 and share["C", "Post Up"] > 0.15
+    # Cutters and putbacks never take threes.
+    inside = pt[pt.situation.isin(["Cut", "Offensive Rebound"]) & (pt.fg_att > 0)]
+    assert (inside["efg_pct"] - inside["fg_pct"]).abs().max() < 1e-9
+    ppp = pt.groupby("situation").apply(lambda g: g.pts.sum() / g.poss.sum())
+    assert ppp["Cut"] > ppp["Spot Up"] > ppp["Isolation"] > ppp["Miscellaneous"]
+
+
+def test_check_playtypes_catches_bad_sums(tables) -> None:
+    from scout.synergy import check_playtypes
+    broken = tables["playtypes_offense"].copy()
+    broken.loc[broken.index[0], "pts"] += 5
+    assert any("play types sum to" in e for e in check_playtypes(broken, tables["offense"]))
+
+
+def test_parser_reads_playtype_export_and_aliases(tables) -> None:
+    from scout.synergy import check_playtypes
+    pt = tables["playtypes_offense"]
+    one = pt[pt.player_id == "P0007"].reset_index(drop=True)
+    text = render_export(one, "Jordan Testcase", "Example State", 29)
+    text = text.replace("\nPost Up ", "\nPost-Up ").replace("\nOffensive Rebound ", "\nPutbacks ")
+    exp = parse_text(text)
+    assert exp.view == "playtypes" and exp.side == "offense"
+    assert list(exp.table.situation) == list(one.situation)  # aliases mapped back
+    overall = tables["offense"][tables["offense"].player_id == "P0007"]
+    assert check_playtypes(exp.table.assign(player_id="P0007"), overall) == []
+
+
+def test_parser_detects_defense_from_url(tables) -> None:
+    pt = tables["playtypes_defense"]
+    one = pt[pt.player_id == "P0007"].reset_index(drop=True)
+    text = render_export(one, "Jordan Testcase", "Example State", 29).replace(
+        "players/... Page", "players/...&offense=false Page")
+    exp = parse_text(text)
+    assert (exp.view, exp.side) == ("playtypes", "defense")

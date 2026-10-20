@@ -65,6 +65,7 @@ def create_app(backend: SearchBackend | None = None, db_path: Path | str = DB_PA
     @app.get("/health")
     def health(request: Request) -> dict[str, Any]:
         return {"status": "ok", "players": len(request.app.state.backend.scored),
+                "dataset": getattr(request.app.state.backend, "dataset", "synthetic"),
                 "llm_enabled": has_api_key(), "model": SCOUT_MODEL}
 
     @app.post("/search")
@@ -99,7 +100,8 @@ def create_app(backend: SearchBackend | None = None, db_path: Path | str = DB_PA
     @app.post("/players/{player_id}/report")
     def report(player_id: str, request: Request, force: bool = False) -> ReportResult:
         row = _player_or_404(request, player_id)
-        return generate_report(row, force=force, db_path=request.app.state.db_path)
+        playtypes = request.app.state.backend.playtype_summary(player_id)
+        return generate_report(row, force=force, db_path=request.app.state.db_path, playtypes=playtypes)
 
     return app
 

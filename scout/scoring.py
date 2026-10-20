@@ -228,7 +228,12 @@ def attention_score(df: pd.DataFrame) -> pd.Series:
         "social_followers": np.log1p(df["social_followers"]),
         "news_mentions_90d": df["news_mentions_90d"],
     }
-    return sum(w[k] * 100 * v.rank(pct=True, method="average") for k, v in signals.items())
+    # Blank attention (real players without that data) is unknown, not zero: average the
+    # signals we have, and leave Attention blank if none are known.
+    ranks = pd.DataFrame({k: 100 * v.rank(pct=True, method="average") for k, v in signals.items()})
+    weights = pd.Series(w)[ranks.columns]
+    known = ranks.notna()
+    return (ranks.fillna(0) * weights).sum(axis=1) / (known * weights).sum(axis=1).replace(0, np.nan)
 
 
 def underrated_score(translation: pd.Series, attention: pd.Series) -> pd.Series:
@@ -236,13 +241,24 @@ def underrated_score(translation: pd.Series, attention: pd.Series) -> pd.Series:
     return (translation - attention + 100) / 2
 
 
-def score_players(players: pd.DataFrame) -> pd.DataFrame:
-    """Run the full pipeline. Returns players + derived, adj_*, pct_*, and score columns."""
-    df = add_percentiles(adjust_stats(derive_stats(players)))
+def score_players(players: pd.DataFrame, reference: pd.DataFrame | None = None,
+                  baseline_label: str | None = None) -> pd.DataFrame:
+    """Run the full pipeline. Returns players + derived, adj_*, pct_*, and score columns.
+
+    reference: extra players (e.g. the synthetic D1 pool) used ONLY as the comparison
+    baseline for D1 percentiles, averages, and attention ranks, then dropped. Lets a
+    handful of real players be scored before a real D1 dataset exists.
+    """
+    df = players.assign(_reference=False)
+    if reference is not None:
+        ref = reference[~reference["player_id"].isin(players["player_id"])]
+        df = pd.concat([df, ref.assign(_reference=True)], ignore_index=True)
+    df = add_percentiles(adjust_stats(derive_stats(df)))
     df["translation_score"] = translation_score(df)
     df["attention_score"] = attention_score(df)
     df["underrated_score"] = underrated_score(df["translation_score"], df["attention_score"])
-    return df
+    df["baseline"] = baseline_label
+    return df[~df["_reference"]].drop(columns="_reference").reset_index(drop=True)
 
 
 # --------------------------------------------------------------------------- explain
@@ -313,4 +329,8 @@ def explain_player(row: pd.Series) -> dict[str, Any]:
                      f"Translation pulled toward {SCORING_CONFIG['reliability_prior']:.0f}")
     if pd.isna(row["off_ppp"]):
         notes.append("No Synergy data: scored on box-score stats only")
+    if "attention_score" in row and pd.isna(row["attention_score"]):
+        notes.append("No attention data (stars, followers, news): Underrated not computed")
+    if isinstance(row.get("baseline"), str):
+        notes.append(f"Percentiles compare him against the {row['baseline']} baseline")
     return {"top_factors": top, "top_concern": concern, "notes": notes}

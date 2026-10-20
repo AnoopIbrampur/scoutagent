@@ -51,12 +51,21 @@ def fetch_planted(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
 
 
 def load_synergy(con: duckdb.DuckDBPyConnection, offense: pd.DataFrame, defense: pd.DataFrame,
-                 prefix: str = "synergy") -> None:
-    """Replace <prefix>_offense and <prefix>_defense (Synergy situational tables)."""
-    for side, df in (("offense", offense), ("defense", defense)):
+                 prefix: str = "synergy", playtypes: dict[str, pd.DataFrame] | None = None) -> None:
+    """Replace <prefix>_offense/_defense and, if given, <prefix>_playtypes_offense/_defense."""
+    tables = {"offense": offense, "defense": defense} | (playtypes or {})
+    for name, df in tables.items():
         con.register("syn_df", df)
-        con.execute(f"CREATE OR REPLACE TABLE {prefix}_{side} AS SELECT * FROM syn_df")
+        con.execute(f"CREATE OR REPLACE TABLE {prefix}_{name} AS SELECT * FROM syn_df")
         con.unregister("syn_df")
+
+
+def fetch_playtypes(con: duckdb.DuckDBPyConnection, prefix: str = "synergy") -> dict[str, pd.DataFrame]:
+    """{'playtypes_offense': df, 'playtypes_defense': df}, or {} if not loaded."""
+    try:
+        return {k: con.execute(f"SELECT * FROM {prefix}_{k}").df() for k in ("playtypes_offense", "playtypes_defense")}
+    except duckdb.CatalogException:
+        return {}
 
 
 def fetch_synergy(con: duckdb.DuckDBPyConnection, prefix: str = "synergy") -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
@@ -66,3 +75,16 @@ def fetch_synergy(con: duckdb.DuckDBPyConnection, prefix: str = "synergy") -> tu
                 con.execute(f"SELECT * FROM {prefix}_defense").df())
     except duckdb.CatalogException:
         return None, None
+
+
+def load_real_players(con: duckdb.DuckDBPyConnection, players: pd.DataFrame) -> int:
+    """Replace the real_players table (roster CSV joined to Synergy exports). Returns row count."""
+    con.register("real_df", players)
+    con.execute("CREATE OR REPLACE TABLE real_players AS SELECT * FROM real_df")
+    con.unregister("real_df")
+    return con.execute("SELECT count(*) FROM real_players").fetchone()[0]
+
+
+def fetch_real_players(con: duckdb.DuckDBPyConnection) -> pd.DataFrame:
+    """The real_players table (raises duckdb.CatalogException if none were loaded)."""
+    return con.execute("SELECT * FROM real_players ORDER BY player_id").df()

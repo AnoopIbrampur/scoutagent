@@ -33,7 +33,7 @@ from scout.scoring import STAT_LABELS, explain_player
 
 log = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v3"  # bump to invalidate cached reports after prompt changes
+PROMPT_VERSION = "v4"  # bump to invalidate cached reports after prompt changes
 SECTIONS = [
     "Snapshot", "Strengths", "Weaknesses / Questions", "Projection at D1 Level",
     "Comparable Player Archetype", "Recommendation",
@@ -60,21 +60,26 @@ def _pct(x: float) -> str:
     return f"{100 * x:.1f}%"
 
 
-def suggested_recommendation(translation: float, underrated: float) -> str:
-    """Rule of thumb shared by the template and the LLM prompt."""
-    if translation >= 75 and underrated >= 65:
+def suggested_recommendation(translation: float, underrated: float | None) -> str:
+    """Rule of thumb shared by the template and the LLM prompt (unknown Underrated counts as met)."""
+    if translation >= 75 and (underrated is None or underrated >= 65):
         return "Pursue"
     if translation >= 55:
         return "Monitor"
     return "Pass"
 
 
-def build_report_input(row: pd.Series) -> dict[str, Any]:
-    """Everything the report may cite, already rounded the way it should be quoted."""
+def build_report_input(row: pd.Series, playtypes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Everything the report may cite, already rounded the way it should be quoted.
+
+    playtypes: his most-used offensive play types (from SearchBackend.playtype_summary).
+    """
     exp = explain_player(row)
     weighted = [f["stat"] for f in exp["top_factors"]] + [exp["top_concern"]["stat"]]
     pct_stats = list(dict.fromkeys(weighted + ["ts_pct", "ast_to", "pts_per40", "reb_per40", "ast_per40", "tov_per40"]))
-    t, u = round(float(row["translation_score"]), 1), round(float(row["underrated_score"]), 1)
+    t = round(float(row["translation_score"]), 1)
+    u = None if pd.isna(row["underrated_score"]) else round(float(row["underrated_score"]), 1)
+    opt_int = lambda v: None if pd.isna(v) else int(v)  # noqa: E731  (attention may be unknown)
     return {
         "player": {
             "name": row["name"], "school": row["school"], "conference": row["conference"],
@@ -110,12 +115,14 @@ def build_report_input(row: pd.Series) -> dict[str, Any]:
         "d1_position_percentiles": {STAT_LABELS[s]: int(round(float(row[f"pct_{s}"])))
                                     for s in pct_stats if not pd.isna(row[f"pct_{s}"])},
         "synergy": synergy_facts(row),
+        "top_playtypes": playtypes or None,
         "attention": {
-            "recruiting_stars": int(row["recruiting_stars"]),
-            "social_followers": int(row["social_followers"]),
-            "news_mentions_90d": int(row["news_mentions_90d"]),
+            "recruiting_stars": opt_int(row["recruiting_stars"]),
+            "social_followers": opt_int(row["social_followers"]),
+            "news_mentions_90d": opt_int(row["news_mentions_90d"]),
         },
-        "scores": {"translation": t, "attention": round(float(row["attention_score"]), 1), "underrated": u},
+        "scores": {"translation": t, "underrated": u,
+                   "attention": None if pd.isna(row["attention_score"]) else round(float(row["attention_score"]), 1)},
         "explanation": {
             "top_factors": [f["text"] for f in exp["top_factors"]],
             "top_concern": exp["top_concern"]["text"],
@@ -312,15 +319,21 @@ def template_report(facts: dict[str, Any], row: pd.Series) -> str:
     skill = _SKILL_OF_STAT.get(exp["top_factors"][0]["stat"], "other")
     archetype = _ARCHETYPES.get((p["position"], skill), _ARCHETYPES[(p["position"], "other")])
     reason = {
-        "Pursue": f"Translation {sc['translation']} with Underrated {sc['underrated']}: D1-level production the market has not priced in.",
+        "Pursue": (f"Translation {sc['translation']} with Underrated {sc['underrated']}: D1-level production the market has not priced in."
+                   if sc["underrated"] is not None else
+                   f"Translation {sc['translation']}: D1-level production; check how widely he is already known."),
         "Monitor": f"Translation {sc['translation']} is D1-viable but not a lock; see him against his best opponents.",
         "Pass": f"Translation {sc['translation']} does not project to a D1 rotation role yet.",
     }[rec]
     weaknesses = [f"- {e['top_concern']}"] + [f"- {n}" for n in e["notes"] if n.startswith("Small sample")]
-    stars = "no recruiting stars" if att["recruiting_stars"] == 0 else f"a {att['recruiting_stars']}-star rating"
-    news = "no news mentions" if att["news_mentions_90d"] == 0 else f"{att['news_mentions_90d']} news mentions"
-    weaknesses.append(f"- Question: {stars} and {news} in 90 days, so little outside film or "
-                      f"evaluation exists. Verify the numbers in person.")
+    if att["recruiting_stars"] is None or att["news_mentions_90d"] is None:
+        weaknesses.append("- Question: no attention data loaded, so how widely he is already known is "
+                          "unclear. Verify the numbers in person.")
+    else:
+        stars = "no recruiting stars" if att["recruiting_stars"] == 0 else f"a {att['recruiting_stars']}-star rating"
+        news = "no news mentions" if att["news_mentions_90d"] == 0 else f"{att['news_mentions_90d']} news mentions"
+        weaknesses.append(f"- Question: {stars} and {news} in 90 days, so little outside film or "
+                          f"evaluation exists. Verify the numbers in person.")
     syn = facts.get("synergy")
     synergy_line = ""
     if syn:
@@ -331,11 +344,16 @@ def template_report(facts: dict[str, Any], row: pd.Series) -> str:
             synergy_line += (f", and {syn['points_allowed_per_possession']:.3f} points allowed per possession "
                              f"on defense ({syn['defense_rating'] or 'unrated'})")
         synergy_line += "."
+    if facts.get("top_playtypes"):
+        parts = [f"{t['play_type']} ({t['share_of_possessions']} of possessions, {t['points_per_possession']:.3f} PPP"
+                 + (f", {t['rating']})" if t["rating"] else ")") for t in facts["top_playtypes"]]
+        synergy_line += " Most-used play types: " + "; ".join(parts) + "."
     return "\n".join([
         "## Snapshot",
         f"{p['class_year']} {p['height']} {p['position']} at {p['school']} ({p['division']}, {p['conference']}): "
         f"{s['points']} PPG, {s['rebounds']} RPG, {s['assists']} APG on {d['true_shooting_pct']} true shooting. "
-        f"Translation {sc['translation']}, Underrated {sc['underrated']}.",
+        f"Translation {sc['translation']}"
+        + (f", Underrated {sc['underrated']}." if sc["underrated"] is not None else " (Underrated not computed: no attention data)."),
         "",
         "## Strengths",
         *[f"- {t}" for t in e["top_factors"]],
@@ -347,7 +365,8 @@ def template_report(facts: dict[str, Any], row: pd.Series) -> str:
         f"After the {a['level_multiplier']} level adjustment, his production projects to "
         f"{a['points_per40']} points, {a['rebounds_per40']} rebounds and {a['assists_per40']} assists per 40 "
         f"minutes against D1 competition, with true shooting around {a['true_shooting_pct']}. "
-        f"A Translation Score of {sc['translation']} places that adjusted profile above most D1 "
+        f"A Translation Score of {sc['translation']} places that adjusted profile "
+        f"{'above' if sc['translation'] >= 50 else 'below'} most D1 "
         f"{p['position']}s on the stats that matter most for the position.{synergy_line}",
         "",
         "## Comparable Player Archetype",
@@ -375,6 +394,8 @@ include open questions a staff should answer on film.
 - If synergy data is present, use it: points per possession and its rating show efficiency per \
 trip, SSM shows shot-making beyond the quality of his shots, and points allowed per possession \
 shows how he defends. Percentiles in d1_position_percentiles are always "higher = better".
+- If top_playtypes is present, describe his role from it (how he gets his offense and how \
+efficient each is).
 - Judge him only against the D1 percentiles provided. Do not compare him to other prospects, his conference, or any list or ranking you were not given.
 - Write numbers as digits. Do not compute fractions or multiples ("a third", "twice").
 - Comparable Player Archetype: describe a player TYPE. Never name a real player.
@@ -448,9 +469,9 @@ def describe_problems(checks: dict[str, list[str]]) -> str:
 
 
 def generate_report(row: pd.Series, force: bool = False, db_path: Path | str = DB_PATH,
-                    use_llm: bool | None = None) -> ReportResult:
+                    use_llm: bool | None = None, playtypes: list[dict[str, Any]] | None = None) -> ReportResult:
     """Return a cached report or generate a new one (LLM if available, else template)."""
-    facts = build_report_input(row)
+    facts = build_report_input(row, playtypes)
     ihash = input_hash(facts)
     use_llm = has_api_key() if use_llm is None else use_llm
     pid = str(row["player_id"])

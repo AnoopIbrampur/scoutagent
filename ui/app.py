@@ -51,7 +51,7 @@ def api(method: str, path: str, timeout: float = 15.0, **kwargs: Any) -> dict[st
     return r.json()
 
 
-def synergy_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
+def synergy_frame(rows: list[dict[str, Any]], first_col: str = "STAT") -> pd.DataFrame:
     """Rows -> DataFrame with Synergy's column labels and display formatting."""
     if not rows:
         return pd.DataFrame()
@@ -65,7 +65,7 @@ def synergy_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
     for key in ("ssq", "pps", "fta_per_fga"):
         df[key] = df[key].map(lambda v: "–" if pd.isna(v) else f"{v:.2f}")
     df["rating"] = df["rating"].fillna("–")
-    labels = {"situation": "STAT"} | dict(SYNERGY_COLUMNS)
+    labels = {"situation": first_col} | dict(SYNERGY_COLUMNS)
     return df[list(labels)].rename(columns=labels)
 
 
@@ -98,6 +98,12 @@ def use_example(q: str) -> None:
 # --------------------------------------------------------------------------- header + search
 st.title("🏀 ScoutAgent")
 st.caption("Recruiting equity: find D1-caliber players at small schools that attention has missed.")
+try:
+    if api("GET", "/health", timeout=5).get("dataset") == "real":
+        st.info("**Real players** from imported Synergy exports + roster. Percentiles compare them against "
+                "the synthetic D1 baseline until real D1 data is loaded.")
+except APIError:
+    pass  # the search below shows the connection error
 
 with st.form("search_form", border=False):
     c1, c2 = st.columns([6, 1])
@@ -177,8 +183,11 @@ m[3].metric("TS%", f"{100 * der['ts_pct']:.1f}%")
 m[4].metric("AST/TO", f"{der['ast_to']:.2f}")
 m[5].metric("3P%", f"{100 * raw['three_pct']:.1f}%", help=f"{raw['three_att_pg']:.1f} attempts per game")
 m[6].metric("Translation", f"{s['translation_score']:.1f}")
-m[7].metric("Underrated", f"{s['underrated_score']:.1f}",
-            help=f"Translation {s['translation_score']:.1f} − Attention {s['attention_score']:.1f}, rescaled to 0–100")
+if s["underrated_score"] is None:
+    m[7].metric("Underrated", "n/a", help="No attention data (stars, followers, news) for this player")
+else:
+    m[7].metric("Underrated", f"{s['underrated_score']:.1f}",
+                help=f"Translation {s['translation_score']:.1f} − Attention {s['attention_score']:.1f}, rescaled to 0–100")
 
 left, right = st.columns([1, 1])
 with left:
@@ -201,8 +210,12 @@ with right:
     st.markdown(f"⚠️ {exp['top_concern']['text']}")
     for n in exp["notes"]:
         st.caption(n)
-    st.caption(f"Attention inputs: {raw['recruiting_stars']}★ · {raw['social_followers']:,} followers · "
-               f"{raw['news_mentions_90d']} news mentions (90 days) → Attention {s['attention_score']:.1f}")
+    if s["attention_score"] is None:
+        st.caption("Attention inputs: none loaded (blank = unknown, not zero)")
+    else:
+        fmt = lambda v, f="{:,.0f}": "?" if v is None else f.format(v)  # noqa: E731
+        st.caption(f"Attention inputs: {fmt(raw['recruiting_stars'])}★ · {fmt(raw['social_followers'])} followers · "
+                   f"{fmt(raw['news_mentions_90d'])} news mentions (90 days) → Attention {s['attention_score']:.1f}")
 
 # --------------------------------------------------------------------------- synergy
 syn = p.get("synergy")
@@ -218,10 +231,16 @@ if syn:
         sm[2].metric("TO%", f"{100 * o['to_pct']:.1f}%")
     if d:
         sm[3].metric("Def. PPP allowed", f"{d['ppp']:.3f}", help=f"{d['rating'] or 'unrated'} · rank {d['ppp_rank']}")
-    tabs = st.tabs(["Offense", "Defense"])
-    for tab, side in zip(tabs, ("offense", "defense")):
+    views = [("Offense", "offense"), ("Defense", "defense"),
+             ("Play types: offense", "playtypes_offense"), ("Play types: defense", "playtypes_defense")]
+    views = [(label, key) for label, key in views if syn.get(key)]
+    for tab, (label, key) in zip(st.tabs([label for label, _ in views]), views):
         with tab:
-            st.dataframe(synergy_frame(syn.get(side, [])), hide_index=True, width="stretch")
+            if key.startswith("playtypes"):
+                st.caption("Play types add up to All Possessions. Layout assumed to match Synergy's play-type "
+                           "view until a real play-type export confirms it.")
+            st.dataframe(synergy_frame(syn[key], first_col="PLAY TYPE" if key.startswith("playtypes") else "STAT"),
+                         hide_index=True, width="stretch")
     st.caption("Ranks are percentiles across all players (Synergy-style). '–' means too few possessions to rank. "
                "Data is synthetic unless imported from real exports.")
 
