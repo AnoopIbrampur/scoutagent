@@ -60,7 +60,9 @@ If the API is on another port, set `SCOUT_API_URL` for the UI.
 | `python -m scripts.load_real_players --pdfs <folder> --template data/roster.csv` | Makes a roster CSV, pre-filled from the exports. |
 | `python -m scripts.load_real_players --pdfs <folder> --roster data/roster.csv` | Loads real players from the roster and exports, scores them, and previews the rankings. |
 | `SCOUT_DATASET=real uvicorn api.main:app --port 8000` | Runs the API on real players instead of synthetic ones. |
-| `pytest -q` | Runs the 129 tests. |
+| `python -m scripts.validate_transfers --simulate` | Self-test of the transfer check on simulated data with known level factors. |
+| `python -m scripts.validate_transfers --transfers data/transfers.csv` | Checks the scoring against real players who moved up to D1. |
+| `pytest -q` | Runs the 136 tests. |
 
 ### No API key
 
@@ -88,7 +90,25 @@ Every constant lives in `scout/config.py` (`SCORING_CONFIG` and `POSITION_WEIGHT
 
 7. **Explanations.** The top three factors are ranked by `weight × (percentile − 50)`. The top concern is the weakest stat, turnover rate included.
 
-**What the validation shows.** All 15 planted gems rank in the top 50 (the target was 10), and with Synergy stats they all sit in the top 16. Box score alone left two at #18 and #29. Four of the 10 decoys still reach the top 50 with the gate on. This shows the pipeline is wired correctly and the adjustments push the right way. It doesn't show the weights are right. The gems were built with an efficiency edge, and the weights reward efficiency, so passing was always likely. Checking the weights properly would take real data on players who moved up a level and how they did.
+**What the validation shows.** All 15 planted gems rank in the top 50 (the target was 10), and with Synergy stats they all sit in the top 16. Box score alone left two at #18 and #29. Four of the 10 decoys still reach the top 50 with the gate on. This shows the pipeline is wired correctly and the adjustments push the right way. It doesn't show the weights are right. The gems were built with an efficiency edge, and the weights reward efficiency, so passing was always likely. Checking them properly takes real data on players who moved up a level, which is what the transfer check below is for.
+
+## Checking the scoring against real transfers
+
+The planted-gems test can't tell you whether the weights or level factors are right. Players who actually moved from D2, D3 or NAIA up to D1 can. `scripts/validate_transfers.py` takes one row per move-up (his last small-school season and his first D1 season) and answers two questions.
+
+**Are the level factors right?** For each division it compares the production that actually carried over to D1 with what the factors predicted, and suggests a corrected factor with a 95% interval. It also accounts for the conference he came from and the one he joined.
+
+**Does Translation predict who succeeds?** It reports the rank correlation between his pre-transfer scores and two D1 outcomes: minutes per game (the coaches' verdict) and D1 production. Translation is compared against raw points per game and against itself with the level adjustment turned off. The minutes result is the one to trust. D1 production reuses the Translation formula, so Translation has a built-in edge there.
+
+Before trusting it on real data, the harness was tested on simulated transfers from a world where the true factors were deliberately different from the config (D2 0.72, D3 0.58, NAIA 0.66, against configured 0.80, 0.65 and 0.70). It suggested 0.707, 0.589 and 0.651, and each true value sat inside its 95% interval. Run `python -m scripts.validate_transfers --simulate` to see it.
+
+To run it on real players:
+
+1. `python -m scripts.validate_transfers --template data/transfers.csv` writes an empty file with the 36 columns. `docs/transfers_example.csv` shows two made-up rows, including how to enter a player who never got on the floor at D1.
+2. Fill in real move-ups. Transfer-portal lists show who went where, and each school's athletics site has season stats. Copy them by hand or export them from Synergy; don't write a scraper. Aim for at least 15 players per division, because fewer than that and the intervals are too wide to mean much, and the report says so.
+3. `python -m scripts.validate_transfers --transfers data/transfers.csv` prints the report.
+
+Two things will bias the result, and the report says so. Players who barely played at D1 drop out of the level-factor check, which makes the factors look better than they are. And only the players good enough to move up are in the data at all, which narrows the range and pulls the correlations down.
 
 ## Synergy-format data
 
