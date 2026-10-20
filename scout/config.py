@@ -42,3 +42,40 @@ PLAYER_COLUMNS = (
 def has_api_key() -> bool:
     """True if an Anthropic key is configured (never returns or logs the key)."""
     return bool(os.getenv("ANTHROPIC_API_KEY", "").strip())
+
+
+# ---------------------------------------------------------------------------
+# Scoring assumptions. ALL of these are judgment calls to tune, not facts.
+# ---------------------------------------------------------------------------
+SCORING_CONFIG: dict = {
+    # How much a season of production at each level is worth at D1.
+    "level_factor": {"D1": 1.00, "D2": 0.80, "D3": 0.65, "NAIA": 0.70},
+    # Conference adjustment: multiplier = base + slope * conference_strength.
+    # An average conference (0.5) gives exactly 1.0; range is 0.85-1.15.
+    "conference_base": 0.85,
+    "conference_slope": 0.30,
+    # 3P% is shrunk toward the D1 position average by this many "phantom"
+    # attempts, so a center who went 3-for-5 doesn't look like an elite shooter.
+    "three_pct_prior_attempts": 50,
+    # Translation scores for low-minute players are pulled toward this prior.
+    # Full trust at >= full_trust_minutes season minutes.
+    "reliability_prior": 40.0,
+    "full_trust_minutes": 600,
+    # Attention blend (weights sum to 1).
+    "attention_weights": {"recruiting_stars": 0.40, "social_followers": 0.35, "news_mentions_90d": 0.25},
+}
+
+# Position-aware Translation weights over adjusted stats (each row sums to 1).
+# PG emphasizes decision-making and shooting; bigs emphasize rebounding/rim protection.
+POSITION_WEIGHTS: dict[str, dict[str, float]] = {
+    "PG": {"ast_to": 0.22, "ast_per40": 0.20, "ts_pct": 0.18, "three_pct_adj": 0.15,
+           "pts_per40": 0.10, "stl_per40": 0.08, "ft_pct": 0.07},
+    "SG": {"ts_pct": 0.22, "three_pct_adj": 0.20, "pts_per40": 0.20, "ast_per40": 0.10,
+           "ast_to": 0.10, "stl_per40": 0.08, "ft_pct": 0.10},
+    "SF": {"ts_pct": 0.20, "pts_per40": 0.18, "three_pct_adj": 0.14, "reb_per40": 0.14,
+           "stl_per40": 0.10, "ast_to": 0.10, "blk_per40": 0.06, "ft_pct": 0.08},
+    "PF": {"ts_pct": 0.20, "reb_per40": 0.22, "pts_per40": 0.16, "blk_per40": 0.14,
+           "three_pct_adj": 0.10, "stl_per40": 0.08, "ast_to": 0.10},
+    "C": {"ts_pct": 0.22, "reb_per40": 0.25, "blk_per40": 0.22, "pts_per40": 0.15,
+          "ft_pct": 0.06, "ast_to": 0.10},
+}
