@@ -1,0 +1,12 @@
+# Pinned to the versions this was built and tested with.
+duckdb==1.5.6
+pandas==3.0.6
+numpy==2.5.4
+pydantic==2.14.1
+python-dotenv==1.2.4
+anthropic==1.15.0
+fastapi==0.150.0
+uvicorn==0.54.0
+httpx==0.28.1
+streamlit==1.66.0
+pytest==9.1.1
