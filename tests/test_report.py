@@ -236,3 +236,11 @@ def test_negative_ssm_not_flagged(scored) -> None:
     r = scored[scored["ssm"] < 0].iloc[0]
     f = build_report_input(r)
     assert check_numbers(f"Shot-making of {r['ssm']:+.2f} over expected.", f) == []
+
+
+def test_template_pluralizes_news_mentions(scored) -> None:
+    for n, expect in ((1, "1 news mention in"), (2, "2 news mentions in"), (0, "no news mentions")):
+        r = scored.iloc[0].copy()
+        r["news_mentions_90d"], r["recruiting_stars"] = n, 1
+        text = template_report(build_report_input(r), r)
+        assert expect in text and "1 news mentions" not in text

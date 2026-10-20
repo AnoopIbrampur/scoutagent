@@ -331,7 +331,8 @@ def template_report(facts: dict[str, Any], row: pd.Series) -> str:
                           "unclear. Verify the numbers in person.")
     else:
         stars = "no recruiting stars" if att["recruiting_stars"] == 0 else f"a {att['recruiting_stars']}-star rating"
-        news = "no news mentions" if att["news_mentions_90d"] == 0 else f"{att['news_mentions_90d']} news mentions"
+        n = att["news_mentions_90d"]
+        news = "no news mentions" if n == 0 else f"{n} news mention{'s' if n != 1 else ''}"
         weaknesses.append(f"- Question: {stars} and {news} in 90 days, so little outside film or "
                           f"evaluation exists. Verify the numbers in person.")
     syn = facts.get("synergy")
