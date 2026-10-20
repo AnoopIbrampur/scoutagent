@@ -61,6 +61,10 @@ SCORING_CONFIG: dict = {
     # Full trust at >= full_trust_minutes season minutes.
     "reliability_prior": 40.0,
     "full_trust_minutes": 600,
+    # Ranking gate: when sorting by Underrated, only players projecting as at
+    # least D1-average (Translation >= this) are eligible. Without it, players
+    # rank high just for being unknown. Set to None to disable.
+    "min_translation_to_rank": 50.0,
     # Attention blend (weights sum to 1).
     "attention_weights": {"recruiting_stars": 0.40, "social_followers": 0.35, "news_mentions_90d": 0.25},
 }
@@ -79,3 +83,7 @@ POSITION_WEIGHTS: dict[str, dict[str, float]] = {
     "C": {"ts_pct": 0.22, "reb_per40": 0.25, "blk_per40": 0.22, "pts_per40": 0.15,
           "ft_pct": 0.06, "ast_to": 0.10},
 }
+
+# LLM settings. Timeout is per attempt; the SDK retries 429/5xx/timeouts.
+LLM_TIMEOUT_S = float(os.getenv("SCOUT_LLM_TIMEOUT_S", "30"))
+LLM_MAX_RETRIES = 2

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from scout.config import SCORING_CONFIG
 from scout.db import fetch_planted, fetch_players, get_connection
 from scout.scoring import explain_player, score_players
 
@@ -31,6 +32,12 @@ def main() -> None:
     print(f"Gems in top {TOP_N}:   {gems_in}/15  -> {'PASS' if gems_in >= 10 else 'FAIL'} (need >= 10)")
     print(f"Decoys in top {TOP_N}: {decoys_in}/10  (lower is better)")
     print(f"Top {TOP_N} by division: {top['division'].value_counts().to_dict()}")
+
+    gate = SCORING_CONFIG["min_translation_to_rank"]
+    if gate is not None:
+        gated = scored[scored["translation_score"] >= gate].head(TOP_N)
+        print(f"With ranking gate (Translation >= {gate:.0f}): gems {int((gated['kind'] == 'gem').sum())}/15, "
+              f"decoys {int((gated['kind'] == 'decoy').sum())}/10")
 
     cols = ["rank", "player_id", "name", "division", "position", "kind",
             "translation_score", "attention_score", "underrated_score"]
