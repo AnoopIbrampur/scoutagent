@@ -207,6 +207,9 @@ if rep:
         st.warning("Fact check: these numbers are not in the player data: " + ", ".join(rep["flagged_numbers"]))
     else:
         st.success("Fact check passed: every number in this report appears in the player data.")
+    if rep.get("unsupported_claims"):
+        st.warning("Unsupported comparison (the report only has this player's data): "
+                   + " · ".join(f"“{c}”" for c in rep["unsupported_claims"]))
     if rep["missing_sections"]:
         st.warning("Missing sections: " + ", ".join(rep["missing_sections"]))
     with st.container(border=True):

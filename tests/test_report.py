@@ -8,7 +8,8 @@ import pytest
 import scout.report as report
 from scout.llm import LLMError
 from scout.report import (
-    SECTIONS, build_report_input, check_numbers, generate_report, missing_sections, template_report,
+    SECTIONS, build_report_input, check_comparisons, check_numbers, generate_report, missing_sections,
+    template_report,
 )
 from scout.search import DuckDBSearchBackend
 from scripts.generate_seed_data import generate_players
@@ -131,3 +132,95 @@ def test_changed_input_invalidates_cache(row, tmp_path) -> None:
     changed = row.copy()
     changed["points_pg"] = row["points_pg"] + 1
     assert not generate_report(changed, db_path=db, use_llm=False).cached
+
+
+# --- spelled-out numbers and unsupported comparisons ----------------------
+# Fixtures are real slips from a test round where Claude wrote reports for the
+# top 5 players. Each passed the digit-only check but should not have.
+@pytest.fixture(scope="module")
+def player_facts(scored):
+    return lambda pid: build_report_input(scored[scored.player_id == pid].iloc[0])
+
+
+def test_invented_fraction_flagged(player_facts) -> None:
+    f = player_facts("P0080")  # Shane Maddox
+    md = "A plug-and-play floor spacer whose shooting should travel, even if his usage drops by a third."
+    assert check_numbers(md, f) == ["a third"]
+
+
+@pytest.mark.parametrize("phrase", ["twice as many threes", "half of his shots", "doubled his assists",
+                                    "two-thirds of his points"])
+def test_multiples_and_fractions_flagged(player_facts, phrase) -> None:
+    assert check_numbers(phrase, player_facts("P0080")) != []
+
+
+def test_spelled_numbers_must_round_from_data(player_facts) -> None:
+    f = player_facts("P0080")  # 7.6 three-point attempts per game
+    assert check_numbers("7.6 attempts per game, nearly eight a night.", f) == []
+    assert check_numbers("He hits eleven threes a night.", f) == ["eleven"]
+    assert check_numbers("He scored thirty-seven in the final.", f) == ["thirty-seven"]
+    # Known looseness: a spelled-out integer passes if ANY input value rounds to it
+    # ("thirty-four" matches his 33.5 minutes), so word checks catch most, not all.
+    assert check_numbers("He scored thirty-four in the final.", f) == []
+
+
+def test_zero_allowed_when_in_data(player_facts) -> None:
+    f = player_facts("P0429")  # Tobias Zeller: 0 stars, 0 news mentions
+    assert check_numbers("Zero stars and zero news coverage.", f) == []
+
+
+def test_number_word_idioms_not_flagged(player_facts) -> None:
+    md = ("A two-way guard who can play the four in a small-ball four look, shoots it from three, "
+          "and is one of the best passers here. A triple-double threat with one season left.")
+    assert check_numbers(md, player_facts("P0080")) == []
+
+
+@pytest.mark.parametrize("sentence", [
+    "He has done this in the Crossroads, and the NAIA multiplier of 0.74 is the steepest discount on this board.",
+    "Sunbelt Valley conference strength of 0.45 is the weakest competition among this group.",
+    "Highest Translation Score in this group at 94.2.",
+    "D3 to D1 is the biggest jump on this board.",
+    "He is the best shooter in the conference.",
+])
+def test_unsupported_comparisons_flagged(sentence) -> None:
+    assert check_comparisons(sentence) == [sentence.rstrip(".")]
+
+
+@pytest.mark.parametrize("sentence", [
+    "Best shooting profile for his position: 100th percentile among D1 shooting guards.",
+    "His 4.62 assist-to-turnover ratio is the top mark among D1 point guards at the 99th percentile.",
+    "Shooting is the most portable skill in basketball.",
+])
+def test_d1_percentile_comparisons_allowed(sentence) -> None:
+    assert check_comparisons(sentence) == []
+
+
+def test_comparison_keeps_decimals_intact() -> None:
+    out = check_comparisons("- **Best shooting profile on the board: 65.7% true shooting (63.0% adjusted).**")
+    assert out == ["Best shooting profile on the board: 65.7% true shooting (63.0% adjusted)"]
+
+
+def test_retry_feedback_includes_comparisons(row, tmp_path, monkeypatch) -> None:
+    calls = []
+
+    def fake(f, feedback=None):
+        calls.append(feedback)
+        if feedback is None:
+            return _good_llm_md(f) + "\n\nHe is the best guard on this board."
+        return _good_llm_md(f)
+
+    monkeypatch.setattr(report, "llm_report", fake)
+    out = generate_report(row, db_path=tmp_path / "r.duckdb", use_llm=True)
+    assert "best guard on this board" in calls[1]
+    assert out.unsupported_claims == [] and len(calls) == 2
+
+
+def test_claims_survive_cache_round_trip(row, tmp_path, monkeypatch) -> None:
+    def always_compares(f, feedback=None):
+        return _good_llm_md(f) + "\n\nHe is the best guard on this board."
+
+    monkeypatch.setattr(report, "llm_report", always_compares)
+    db = tmp_path / "r.duckdb"
+    first = generate_report(row, db_path=db, use_llm=True)
+    cached = generate_report(row, db_path=db, use_llm=True)
+    assert cached.cached and cached.unsupported_claims == first.unsupported_claims != []

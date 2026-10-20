@@ -33,7 +33,7 @@ from scout.scoring import STAT_LABELS, explain_player
 
 log = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v1"  # bump to invalidate cached reports after prompt changes
+PROMPT_VERSION = "v2"  # bump to invalidate cached reports after prompt changes
 SECTIONS = [
     "Snapshot", "Strengths", "Weaknesses / Questions", "Projection at D1 Level",
     "Comparable Player Archetype", "Recommendation",
@@ -51,6 +51,7 @@ class ReportResult(BaseModel):
     cached: bool = False
     flagged_numbers: list[str] = Field(default_factory=list)
     missing_sections: list[str] = Field(default_factory=list)
+    unsupported_claims: list[str] = Field(default_factory=list)  # comparisons to players not in the data
     notes: list[str] = Field(default_factory=list)
 
 
@@ -171,10 +172,55 @@ def _matches(token: str, allowed: set[float]) -> bool:
     return any(round(a, decimals) == x for a in allowed)
 
 
+_SMALL_WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+                "nineteen"]
+_TENS_WORDS = ["twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+_WORD_VALUE = {w: i for i, w in enumerate(_SMALL_WORDS)} | {w: 20 + 10 * i for i, w in enumerate(_TENS_WORDS)}
+_WORD_NUM = re.compile(
+    rf"\b(?:(?P<tens>{'|'.join(_TENS_WORDS)})(?:[- ](?P<unit>{'|'.join(_SMALL_WORDS[1:10])}))?"
+    rf"|(?P<small>{'|'.join(_SMALL_WORDS)})|(?P<hundred>(?:a |one )?hundred))\b", re.IGNORECASE)
+# Fractions and multiples are always computed quantities ("drops by a third",
+# "twice as many"): the facts never contain them, so any use is flagged.
+_FRACTION = re.compile(
+    r"\b(?:(?:a|one|two)[- ](?:thirds?|quarters?|fifths?)|three[- ]quarters|half of|twice"
+    r"|doubl(?:e|ed|es|ing)(?![- ](?:double|team|digit))|tripl(?:e|ed|es|ing)(?![- ]double))\b", re.IGNORECASE)
+# Basketball idioms that contain number words but are not numeric claims.
+# "one" is skipped entirely: "one of the best", "one season left" are too common.
+_WORD_IDIOMS = [
+    r"\b(?:two|three|four|five)[- ](?:way|guard|man|position|level)s?\b", r"\bstretch (?:four|five)\b",
+    r"\bsmall[- ]ball (?:four|five)\b", r"\bstarting five\b", r"\bfrom three\b", r"\bone\b",
+    r"\bthe (?:two|three|four|five)\b",  # positions: "play the four"
+    r"\b(?:double|triple)[- ]doubles?\b",
+]
+
+
+def _word_number_tokens(text: str) -> list[tuple[str, float]]:
+    """Spelled-out numbers in text as (original phrase, value), after removing idioms."""
+    for pat in _WORD_IDIOMS:
+        text = re.sub(pat, " ", text, flags=re.IGNORECASE)
+    out = []
+    for m in _WORD_NUM.finditer(text):
+        if m.group("hundred"):
+            value = 100
+        elif m.group("tens"):
+            value = _WORD_VALUE[m.group("tens").lower()] + (_WORD_VALUE[m.group("unit").lower()] if m.group("unit") else 0)
+        else:
+            value = _WORD_VALUE[m.group("small").lower()]
+        out.append((m.group(), float(value)))
+    return out
+
+
 def check_numbers(markdown: str, facts: dict[str, Any]) -> list[str]:
-    """Return numbers in the report that are not supported by the input facts."""
-    text = markdown
-    flagged = []
+    """Return numbers in the report that are not supported by the input facts.
+
+    Checks digits ("31.7"), heights ("6'4\""), spelled-out numbers ("eight" must
+    round from a real value such as 7.6), and fractions/multiples ("a third",
+    "twice"), which are always flagged because they are computed, not cited.
+    """
+    text = re.sub(r"\b(?:double|triple)[- ]doubles?\b", " ", markdown, flags=re.IGNORECASE)  # stat idioms
+    flagged = [m.group() for m in _FRACTION.finditer(text)]
+    text = _FRACTION.sub(" ", text)
     for m in _HEIGHT_TOKEN.finditer(text):  # heights must equal the player's height
         h = re.sub(r"\s", "", m.group()).replace("’", "'").replace("”", '"').replace("''", '"')
         if h.rstrip('"') != facts["player"]["height"].rstrip('"'):
@@ -186,7 +232,28 @@ def check_numbers(markdown: str, facts: dict[str, Any]) -> list[str]:
     for m in _NUM.finditer(text):
         if not _matches(m.group(), allowed):
             flagged.append(m.group())
+    for phrase, value in _word_number_tokens(text):
+        if not any(round(a) == value for a in allowed):
+            flagged.append(phrase)
     return list(dict.fromkeys(flagged))
+
+
+# Claims that rank the player against people outside his own data. Each report
+# only sees one player, so "best on the board" or "top guard in the conference"
+# cannot be supported. Comparisons to D1 percentiles are fine: those are in the input.
+_SUPERLATIVE = r"(?:best|worst|highest|lowest|biggest|smallest|steepest|weakest|strongest|most|least|top|only)"
+_OUTSIDE_SCOPE = (r"(?:(?:on|across|in|of) (?:this|the) (?:board|list|group|class|pool|shortlist)"
+                  r"|among (?:this|the|these) (?:group|players|prospects|names|candidates)"
+                  r"|in (?:the|his|this) (?:conference|league|division|country|nation|region|state)"
+                  r"|(?:in|among) (?:the )?(?:nation|country)|nationally)")
+_SENTENCE_CHAR = r"(?:[^.\n]|\.(?=\d))"  # anything but a sentence end; decimals like 65.7 stay intact
+_COMPARISON = re.compile(
+    rf"{_SENTENCE_CHAR}*\b{_SUPERLATIVE}\b{_SENTENCE_CHAR}*?\b{_OUTSIDE_SCOPE}\b{_SENTENCE_CHAR}*", re.IGNORECASE)
+
+
+def check_comparisons(markdown: str) -> list[str]:
+    """Return sentences ranking the player against others the input says nothing about."""
+    return [m.group().replace("**", "").strip(" -*:") for m in _COMPARISON.finditer(markdown)]
 
 
 def missing_sections(markdown: str) -> list[str]:
@@ -269,6 +336,8 @@ If something is not in the data, describe it in words without a number.
 - Strengths and Weaknesses / Questions: 2-4 bullets each, grounded in the data. Weaknesses may \
 include open questions a staff should answer on film.
 - Projection at D1 Level: use the d1_adjusted numbers and percentiles.
+- Judge him only against the D1 percentiles provided. Do not compare him to other prospects, his conference, or any list or ranking you were not given.
+- Write numbers as digits. Do not compute fractions or multiples ("a third", "twice").
 - Comparable Player Archetype: describe a player TYPE. Never name a real player.
 - Recommendation: start with **Pursue**, **Monitor**, or **Pass**, then one line of reasoning. \
 suggested_recommendation is a rule of thumb; you may disagree if the data supports it.
@@ -288,6 +357,7 @@ def _ensure_table(con) -> None:
     con.execute("""CREATE TABLE IF NOT EXISTS reports (
         player_id VARCHAR, input_hash VARCHAR, method VARCHAR, model VARCHAR,
         markdown VARCHAR, flagged VARCHAR, missing VARCHAR, created_at TIMESTAMP)""")
+    con.execute("ALTER TABLE reports ADD COLUMN IF NOT EXISTS claims VARCHAR")  # added in v2
 
 
 def get_cached(player_id: str, ihash: str, db_path: Path | str = DB_PATH) -> ReportResult | None:
@@ -295,27 +365,49 @@ def get_cached(player_id: str, ihash: str, db_path: Path | str = DB_PATH) -> Rep
     with get_connection(db_path) as con:
         _ensure_table(con)
         row = con.execute(
-            "SELECT method, model, markdown, flagged, missing FROM reports "
+            "SELECT method, model, markdown, flagged, missing, claims FROM reports "
             "WHERE player_id = ? AND input_hash = ? ORDER BY created_at DESC LIMIT 1",
             [player_id, ihash]).fetchone()
     if row is None:
         return None
     return ReportResult(player_id=player_id, method=row[0], model=row[1], markdown=row[2], cached=True,
-                        flagged_numbers=json.loads(row[3]), missing_sections=json.loads(row[4]))
+                        flagged_numbers=json.loads(row[3]), missing_sections=json.loads(row[4]),
+                        unsupported_claims=json.loads(row[5] or "[]"))
 
 
 def save_cached(result: ReportResult, ihash: str, db_path: Path | str = DB_PATH) -> None:
     """Insert a report into the cache table."""
     with get_connection(db_path) as con:
         _ensure_table(con)
-        con.execute("INSERT INTO reports VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+        con.execute("INSERT INTO reports (player_id, input_hash, method, model, markdown, flagged, missing, "
+                    "claims, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
             result.player_id, ihash, result.method, result.model, result.markdown,
             json.dumps(result.flagged_numbers), json.dumps(result.missing_sections),
-            datetime.now(timezone.utc).replace(tzinfo=None),
+            json.dumps(result.unsupported_claims), datetime.now(timezone.utc).replace(tzinfo=None),
         ])
 
 
 # --------------------------------------------------------------------------- entry point
+def run_checks(markdown: str, facts: dict[str, Any]) -> dict[str, list[str]]:
+    """All report validations, keyed by their ReportResult field names."""
+    return {"flagged_numbers": check_numbers(markdown, facts),
+            "missing_sections": missing_sections(markdown),
+            "unsupported_claims": check_comparisons(markdown)}
+
+
+def describe_problems(checks: dict[str, list[str]]) -> str:
+    """Feedback for the retry prompt; empty string means the draft is clean."""
+    problems = []
+    if checks["flagged_numbers"]:
+        problems.append(f"these numbers are not in the data: {', '.join(checks['flagged_numbers'])}")
+    if checks["missing_sections"]:
+        problems.append(f"missing sections: {', '.join(checks['missing_sections'])}")
+    if checks["unsupported_claims"]:
+        problems.append("these sentences compare him to players or rankings you were not given: "
+                        + " | ".join(checks["unsupported_claims"]))
+    return "; ".join(problems)
+
+
 def generate_report(row: pd.Series, force: bool = False, db_path: Path | str = DB_PATH,
                     use_llm: bool | None = None) -> ReportResult:
     """Return a cached report or generate a new one (LLM if available, else template)."""
@@ -335,19 +427,14 @@ def generate_report(row: pd.Series, force: bool = False, db_path: Path | str = D
     if use_llm:
         try:
             md = llm_report(facts)
-            flagged, missing = check_numbers(md, facts), missing_sections(md)
-            if flagged or missing:
-                problems = []
-                if flagged:
-                    problems.append(f"these numbers are not in the data: {', '.join(flagged)}")
-                if missing:
-                    problems.append(f"missing sections: {', '.join(missing)}")
-                log.warning("Report check failed for %s (%s); retrying once", pid, "; ".join(problems))
-                md = llm_report(facts, feedback="; ".join(problems))
-                flagged, missing = check_numbers(md, facts), missing_sections(md)
+            checks = run_checks(md, facts)
+            if problems := describe_problems(checks):
+                log.warning("Report check failed for %s (%s); retrying once", pid, problems)
+                md = llm_report(facts, feedback=problems)
+                checks = run_checks(md, facts)
                 notes.append("First draft failed the fact check and was regenerated")
             result = ReportResult(player_id=pid, markdown=md, method="llm", model=SCOUT_MODEL,
-                                  flagged_numbers=flagged, missing_sections=missing, notes=notes)
+                                  notes=notes, **checks)
         except LLMError as e:
             notes.append(f"LLM unavailable ({e}); used the template report")
     else:
@@ -355,8 +442,7 @@ def generate_report(row: pd.Series, force: bool = False, db_path: Path | str = D
 
     if result is None:
         md = template_report(facts, row)
-        result = ReportResult(player_id=pid, markdown=md, method="template",
-                              flagged_numbers=check_numbers(md, facts),
-                              missing_sections=missing_sections(md), notes=notes)
+        result = ReportResult(player_id=pid, markdown=md, method="template", notes=notes,
+                              **run_checks(md, facts))
     save_cached(result, ihash, db_path)
     return result

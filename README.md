@@ -62,7 +62,7 @@ Useful scripts:
 | `python -m scripts.evaluate_scoring` | Acceptance check (planted gems in top 50) and top 10 with explanations |
 | `python -m scripts.try_queries ["query"]` | Parse and search from the terminal |
 | `python -m scripts.warm_cache [n]` | Pre-generate reports for the top n players (run before a demo) |
-| `pytest -q` | 73 tests: scoring math, parser fallback, report fact-check, API |
+| `pytest -q` | 92 tests: scoring math, parser fallback, report fact-check, API |
 
 ### Without an API key
 
@@ -112,9 +112,22 @@ Then `check_numbers()`:
   (61.6% may be written as 62%), plus percentile complements ("top 1%").
 - Requires heights to match exactly.
 
+It also checks spelled-out numbers: "eight" must round from a real value such as 7.6.
+Fractions and multiples ("a third", "twice", "half of") are always flagged, because they are
+computed rather than cited.
+
+`check_comparisons()` flags sentences that rank the player against people outside his data
+("the steepest discount on this board", "best shooter in the conference"). Each report sees
+one player, so those claims can't be supported. Comparisons to D1 percentiles are fine.
+
 If anything is flagged or a section is missing, Claude gets one retry with the problems listed.
 Anything still flagged is shown in the UI as a warning. All 600 template reports pass, and planted
 fakes (`31.7 PPG`, `6'4"`) are caught.
+
+**Test round:** Claude wrote reports for the top 5 players from the exact report inputs. All
+passed the original digit-only check, but rereading found an invented fraction ("usage drops by a
+third") and 6 cross-player comparisons, one of them false (calling a 0.74 multiplier the steepest
+when another player's was 0.69). Those sentences are now regression tests in `tests/test_report.py`.
 
 ## Known limitations
 
@@ -124,8 +137,10 @@ fakes (`31.7 PPG`, `6'4"`) are caught.
 - **One season, box-score only.** No tracking data, schedule strength beyond a conference
   number, age, injuries, or film.
 - **Attention data is simplistic.** Real followers and news counts would need their own sources.
-- **The fact-check is numeric only.** It can't catch a wrong *claim* written without a number
-  ("elite defender"), or a real player's name in the archetype.
+- **The fact-check is pattern-based.** It catches wrong numbers and out-of-scope rankings, but not
+  a wrong claim with no number ("elite defender"), or a real player's name in the archetype.
+  Spelled-out integers pass if *any* input value rounds to them ("thirty-four" matches 33.5
+  minutes), so word checks catch most invented numbers, not all.
 - **The keyword fallback is regex-based.** It handles common phrasings, not everything Claude can.
 - **The real-LLM path wasn't exercised in this build** (no key during development). It's
   covered by mocked tests; run `try_queries` and generate a report once a key is set.
