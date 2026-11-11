@@ -41,14 +41,30 @@ cp .env.example .env              # add ANTHROPIC_API_KEY if you have one; the a
 
 ## Running it
 
-The API and the UI are separate processes. Start each in its own terminal and leave both running.
-
 ```bash
-.venv/bin/uvicorn api.main:app --port 8000          # API, docs at http://localhost:8000/docs
 .venv/bin/streamlit run ui/app.py                    # UI at http://localhost:8501
 ```
 
-If the API is on another port, set `SCOUT_API_URL` for the UI.
+That's the whole app in one process. If there's no database yet, it builds the synthetic one on first load, which takes about a second.
+
+The FastAPI service is optional. Run it when another program needs HTTP access, or to run the UI against it:
+
+```bash
+.venv/bin/uvicorn api.main:app --port 8000           # API, docs at http://localhost:8000/docs
+SCOUT_MODE=api .venv/bin/streamlit run ui/app.py     # UI talks to the API instead of running in process
+```
+
+Both paths call the same code in `scout/service.py`, so they return the same results.
+
+### Hosting a demo link
+
+The app deploys as is to Streamlit Community Cloud, which is free for public repos:
+
+1. Sign in at share.streamlit.io with GitHub and click Create app.
+2. Pick this repo, branch `main`, main file `ui/app.py`. Under Advanced settings, choose Python 3.13.
+3. Deploy. The first boot installs the requirements and builds the synthetic dataset.
+
+A free app goes to sleep after a few days without visitors, and the next visit takes about 30 seconds to wake it. Open the link yourself before sharing it. The hosted app has no API key, so queries use the keyword parser and reports use the offline template. It only ever shows synthetic players.
 
 | Command | What it does |
 |---|---|

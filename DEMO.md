@@ -2,7 +2,7 @@
 
 Before you present, give yourself five minutes:
 
-1. Start the API and the UI. Run one search and check that the line under the search bar says "understood by Claude". If it says "the keyword parser", there's no key set.
+1. Open the hosted link, or run `streamlit run ui/app.py` locally. Run one search. The line under the search bar says whether Claude or the keyword parser read it; without an API key it's the keyword parser, which handles every example pill.
 2. Run `python -m scripts.warm_cache 25` so the reports you're likely to open are already cached.
 3. Skim the backup table at the bottom of this page.
 4. Reload the page right before you start. The example pills rotate after every search, and a fresh page brings back the three this script uses.
@@ -50,7 +50,7 @@ If someone pushes on that last point: the planted gems were built with an effici
 | Claude is down or slow | "understood by the keyword parser" under the search bar | Keep going. Say "the model isn't responding, so it's using a simpler parser." The three example queries give the same filters either way. A messy custom query might not. |
 | The report doesn't generate | "Offline template" next to the report | It has the same sections and passes the same fact-check. Or open a player from the cached top 25. |
 | No Wi-Fi at all | The app is local, only Claude needs a network | Leave the API key unset and restart the API. Everything runs offline. |
-| The API crashed | "Can't reach the API…" under the search bar | Restart it with `uvicorn api.main:app --port 8000`. It's back in about two seconds. |
+| The app crashed or the hosted link is asleep | An error page, or a long "waking up" screen | Locally, rerun `streamlit run ui/app.py`. A sleeping hosted app wakes in about 30 seconds, so open it before you present. |
 | The laptop or the UI dies | n/a | Play a screen recording of the full flow (make one the night before). Or fall back to the terminal with `python -m scripts.try_queries` and `python -m scripts.evaluate_scoring`. |
 
 Don't demo a query you haven't run that day. Stick to the three example pills plus one custom query you've rehearsed.
