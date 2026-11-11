@@ -61,7 +61,7 @@ Both paths call the same code in `scout/service.py`, so they return the same res
 The app deploys as is to Streamlit Community Cloud, which is free for public repos:
 
 1. Sign in at share.streamlit.io with GitHub and click Create app.
-2. Pick this repo, branch `main`, main file `ui/app.py`. Under Advanced settings, choose Python 3.13.
+2. Pick this repo, branch `main`, main file `ui/app.py`. Under Advanced settings, pick Python 3.12 or 3.13 (anything from 3.11 up works).
 3. Deploy. The first boot installs the requirements and builds the synthetic dataset.
 
 A free app goes to sleep after a few days without visitors, and the next visit takes about 30 seconds to wake it. Open the link yourself before sharing it. The hosted app has no API key, so queries use the keyword parser and reports use the offline template. It only ever shows synthetic players.
