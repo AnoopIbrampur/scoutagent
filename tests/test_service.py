@@ -43,3 +43,16 @@ def test_service_matches_http_api(built, monkeypatch) -> None:
 def test_unknown_player(built) -> None:
     with pytest.raises(UnknownPlayer):
         ScoutService(db_path=built).player("NOPE")
+
+
+def test_concurrent_searches_are_safe(built) -> None:
+    """Hosted visitors share one service; simultaneous searches must not collide."""
+    from concurrent.futures import ThreadPoolExecutor
+    svc = ScoutService(db_path=built)
+    queries = ["D2 point guard who can pass", "NAIA center", "shooting wings from small schools",
+               "D3 guard under 6'1", "lockdown defender in D2", "most D1-ready bigs"] * 4
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda q: svc.search(q, limit=5), queries))
+    assert len(results) == len(queries) and all("results" in r for r in results)
+    # Same query, same answer, regardless of what ran alongside it.
+    assert results[0]["results"] == results[6]["results"]

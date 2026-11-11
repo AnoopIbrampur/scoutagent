@@ -65,7 +65,11 @@ class ScoutService:
             ensure_database(db_path)
             backend = DuckDBSearchBackend(db_path)
         self.backend = backend
-        self._report_lock = threading.Lock()  # report cache writes go to one DuckDB file
+        # The hosted app shares one service across every visitor's thread. DuckDB connections
+        # aren't thread-safe, so searches (one in-memory connection) and report cache writes
+        # (one database file) each run one at a time. Both take milliseconds.
+        self._search_lock = threading.Lock()
+        self._report_lock = threading.Lock()
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "players": len(self.backend.scored),
@@ -75,7 +79,8 @@ class ScoutService:
     def search(self, query: str, limit: int = 20, include_gated: bool = False) -> dict[str, Any]:
         be = self.backend
         parsed = parse_query(query, known_schools=getattr(be, "schools", None))
-        res = be.search(parsed.filters, limit=limit, apply_gate=not include_gated)
+        with self._search_lock:
+            res = be.search(parsed.filters, limit=limit, apply_gate=not include_gated)
         return {"parsed": {"filters": parsed.filters.model_dump(), "method": parsed.method,
                            "notes": parsed.notes, "chips": parsed.chips()}, **res}
 
