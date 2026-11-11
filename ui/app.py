@@ -1,6 +1,7 @@
 """ScoutAgent Streamlit UI. Talks to the FastAPI service over HTTP.
 
-Run (with the API already running):  streamlit run ui/app.py
+Run:  streamlit run ui/app.py      (one process; builds the synthetic dataset if missing)
+      SCOUT_MODE=api streamlit run ui/app.py   (talk to a separately running FastAPI service)
 
 Layout follows Apple's design principles (styles live in ui/style.css):
   - One clear path: describe a player -> scan the shortlist -> read the player.
@@ -13,6 +14,7 @@ Layout follows Apple's design principles (styles live in ui/style.css):
 from __future__ import annotations
 
 import html
+import os
 import random
 import sys
 from pathlib import Path
@@ -59,13 +61,46 @@ _dark_css = _dark if _theme == "dark" else "" if _theme == "light" else f"@media
 st.markdown(f"<style>{(_UI / 'style.css').read_text()}{_dark_css}</style>", unsafe_allow_html=True)
 
 
-# --------------------------------------------------------------------------- API client
+# --------------------------------------------------------------------------- backend access
+# By default the UI runs everything in this one process (scout.service), which is how the
+# hosted demo works. SCOUT_MODE=api makes it talk to a separately running FastAPI service.
+MODE = os.getenv("SCOUT_MODE", "local").lower()
+
+
 class APIError(RuntimeError):
     pass
 
 
+@st.cache_resource(show_spinner="Loading players…")
+def local_service():
+    """One shared service per server process (builds the synthetic dataset on first boot)."""
+    from scout.service import ScoutService
+    return ScoutService()
+
+
+def _local(method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    """Route the same calls the HTTP API serves to the in-process service."""
+    from scout.service import UnknownPlayer
+    svc = local_service()
+    parts = path.strip("/").split("/")
+    try:
+        if parts == ["health"]:
+            return svc.health()
+        if parts == ["search"] and method == "POST":
+            return svc.search(**kwargs.get("json", {}))
+        if len(parts) == 2 and parts[0] == "players":
+            return svc.player(parts[1])
+        if len(parts) == 3 and parts[0] == "players" and parts[2] == "report":
+            return svc.report(parts[1], force=bool(kwargs.get("params", {}).get("force")))
+    except UnknownPlayer as e:
+        raise APIError(f"Unknown player {e}") from e
+    raise APIError(f"Unsupported call {method} {path}")
+
+
 def api(method: str, path: str, timeout: float = 15.0, **kwargs: Any) -> dict[str, Any]:
-    """Call the API; raise APIError with a readable message on any failure."""
+    """Run a backend call (in process, or over HTTP when SCOUT_MODE=api); raise APIError on failure."""
+    if MODE != "api":
+        return _local(method, path, **kwargs)
     try:
         r = httpx.request(method, f"{API_URL}{path}", timeout=timeout, **kwargs)
     except httpx.ConnectError as e:

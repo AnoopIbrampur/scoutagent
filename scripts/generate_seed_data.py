@@ -29,7 +29,9 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from scout.config import DATA_DIR, SEED_PLANTED_CSV, SEED_PLAYERS_CSV
+from pathlib import Path
+
+from scout.config import DATA_DIR, DB_PATH, SEED_PLANTED_CSV, SEED_PLAYERS_CSV
 from scout.data_sources import SeedDataSource
 from scout.db import get_connection, load_players, load_synergy
 from scout.synergy import check_identities, check_playtypes, generate_synergy_tables
@@ -293,8 +295,11 @@ def print_summary(players: pd.DataFrame, planted: pd.DataFrame) -> None:
         print(merged.loc[merged["kind"] == kind, show].sort_values(["division", "position"]).to_string(index=False))
 
 
-def main() -> None:
-    """Generate CSVs, load them through SeedDataSource into DuckDB, print a summary."""
+def build_database(db_path: Path | str = DB_PATH) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Generate the dataset, check it, write the seed CSVs, and load DuckDB at db_path.
+
+    Returns (players, planted, synergy tables). Used by main() and by the app on first boot.
+    """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     players, planted = generate_players()
     players.to_csv(SEED_PLAYERS_CSV, index=False)
@@ -310,13 +315,19 @@ def main() -> None:
         raise RuntimeError(f"Synergy tables broke {len(problems)} rules, e.g. {problems[:3]}")
 
     source = SeedDataSource(SEED_PLAYERS_CSV)
-    with get_connection() as con:
-        n = load_players(con, source.fetch_players(), planted)
+    with get_connection(db_path) as con:
+        load_players(con, source.fetch_players(), planted)
         load_synergy(con, offense, defense, playtypes=playtypes)
-    print(f"Loaded {n} players into DuckDB ({len(planted)} planted rows in planted_gems).")
-    print(f"Synergy-format tables: {len(offense)} offense + {len(defense)} defense rows "
-          f"(12 situations per player) + {len(playtypes['playtypes_offense'])} offense / "
-          f"{len(playtypes['playtypes_defense'])} defense play-type rows, all rules consistent.")
+    return players, planted, syn
+
+
+def main() -> None:
+    """Build the database and print a summary."""
+    players, planted, syn = build_database()
+    print(f"Loaded {len(players)} players into DuckDB ({len(planted)} planted rows in planted_gems).")
+    print(f"Synergy-format tables: {len(syn['offense'])} offense + {len(syn['defense'])} defense rows "
+          f"(12 situations per player) + {len(syn['playtypes_offense'])} offense / "
+          f"{len(syn['playtypes_defense'])} defense play-type rows, all rules consistent.")
     print_summary(players, planted)
 
 
