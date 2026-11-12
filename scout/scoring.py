@@ -217,23 +217,26 @@ def translation_score(df: pd.DataFrame) -> pd.Series:
 
 
 def attention_score(df: pd.DataFrame) -> pd.Series:
-    """Weighted blend of percentile ranks (across all players) of attention signals.
-
-    Followers are log-scaled first (rank is unchanged by log, but it documents
-    that 10k vs 100k matters about as much as 1k vs 10k).
+    """How much the recruiting world already knows about him: a weighted blend of
+    percentile ranks (across all players) of recruiting stars and news mentions.
     """
     w = SCORING_CONFIG["attention_weights"]
-    signals = {
-        "recruiting_stars": df["recruiting_stars"],
-        "social_followers": np.log1p(df["social_followers"]),
-        "news_mentions_90d": df["news_mentions_90d"],
-    }
+    signals = {"recruiting_stars": df["recruiting_stars"], "news_mentions_90d": df["news_mentions_90d"]}
     # Blank attention (real players without that data) is unknown, not zero: average the
     # signals we have, and leave Attention blank if none are known.
     ranks = pd.DataFrame({k: 100 * v.rank(pct=True, method="average") for k, v in signals.items()})
     weights = pd.Series(w)[ranks.columns]
     known = ranks.notna()
     return (ranks.fillna(0) * weights).sum(axis=1) / (known * weights).sum(axis=1).replace(0, np.nan)
+
+
+def marketability_score(df: pd.DataFrame) -> pd.Series:
+    """Percentile (0-100, across all players) of social followers. Unknown stays blank.
+
+    Kept separate from attention on purpose: for an NIL-focused agency a following is
+    an asset to sell, not a sign the player is already overvalued.
+    """
+    return 100 * np.log1p(df["social_followers"]).rank(pct=True, method="average")
 
 
 def underrated_score(translation: pd.Series, attention: pd.Series) -> pd.Series:
@@ -256,6 +259,7 @@ def score_players(players: pd.DataFrame, reference: pd.DataFrame | None = None,
     df = add_percentiles(adjust_stats(derive_stats(df)))
     df["translation_score"] = translation_score(df)
     df["attention_score"] = attention_score(df)
+    df["marketability_score"] = marketability_score(df)
     df["underrated_score"] = underrated_score(df["translation_score"], df["attention_score"])
     df["baseline"] = baseline_label
     return df[~df["_reference"]].drop(columns="_reference").reset_index(drop=True)

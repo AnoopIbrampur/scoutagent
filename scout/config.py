@@ -69,8 +69,10 @@ SCORING_CONFIG: dict = {
     # D1 position average, like the 3P% prior. Defense samples are smaller.
     "synergy_prior_off_poss": 50,
     "synergy_prior_def_poss": 100,
-    # Attention blend (weights sum to 1).
-    "attention_weights": {"recruiting_stars": 0.40, "social_followers": 0.35, "news_mentions_90d": 0.25},
+    # Attention = how much the recruiting world already knows about him (weights sum to 1).
+    # Social followers are NOT attention here: for an agency they're marketability, an
+    # asset in NIL deals, so they get their own score instead of counting against him.
+    "attention_weights": {"recruiting_stars": 0.60, "news_mentions_90d": 0.40},
 }
 
 # Box-score weights by position (each row sums to 1).
@@ -114,3 +116,10 @@ LLM_MAX_RETRIES = 2
 SYNERGY_RATING_CUTOFFS: list[tuple[float, str]] = [
     (85, "Excellent"), (65, "Very Good"), (45, "Good"), (30, "Average"), (10, "Below Average"),
 ]  # below the last cutoff: "Poor"
+
+# Representation call (the agency version of a recommendation). Thresholds on
+# Translation (would he hold up at D1?) and Underrated (is the market missing him?).
+REPRESENTATION_RULES = {
+    "sign": {"min_translation": 75.0, "min_underrated": 65.0},  # unknown Underrated counts as met
+    "watch": {"min_translation": 55.0},
+}  # anything below "watch" is "Pass"

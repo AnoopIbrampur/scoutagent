@@ -66,9 +66,10 @@ def emphasis_score(df: pd.DataFrame, emphasis: list[str]) -> pd.Series:
 def player_summary(row: pd.Series) -> dict[str, Any]:
     """Compact JSON-safe view of a scored player for result lists."""
     keys = ["player_id", "name", "school", "conference", "division", "position",
-            "height_in", "class_year", "translation_score", "attention_score", "underrated_score"]
+            "height_in", "class_year", "translation_score", "attention_score", "underrated_score",
+            "marketability_score"]
     out = {k: to_python(row[k]) for k in keys}
-    for k in ("translation_score", "attention_score", "underrated_score"):
+    for k in ("translation_score", "attention_score", "underrated_score", "marketability_score"):
         out[k] = None if out[k] is None else round(out[k], 1)  # None = unknown (no attention data)
     out["height"] = inches_to_str(int(row["height_in"]))
     return out
