@@ -35,7 +35,7 @@ from scout.scoring import STAT_LABELS, explain_player
 
 log = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v5"  # bump to invalidate cached reports after prompt changes
+PROMPT_VERSION = "v6"  # bump to invalidate cached reports after prompt changes
 SECTIONS = [
     "Snapshot", "Strengths", "Weaknesses / Questions", "Projection at D1 Level",
     "Comparable Player Archetype", "Leverage Points", "Best-Fit Destinations", "Representation Call",
@@ -421,7 +421,7 @@ talking to a program or a collective. Marketability, if present, is an NIL asset
 using its reason. If it is missing, say program fit needs roster data.
 - Representation Call: start with **Sign**, **Watch**, or **Pass**, then one line of reasoning. \
 suggested_recommendation is a rule of thumb; you may disagree if the data supports it.
-- Under 350 words. No preamble before the first header."""
+- Under 500 words. No preamble before the first header."""
 
 
 def llm_report(facts: dict[str, Any], feedback: str | None = None) -> str:

@@ -57,15 +57,16 @@ def test_best_fits_exclude_his_own_school(world) -> None:
     assert row["school"] not in {f["school"] for f in best_fits(row, scored, pt, n=30)}
 
 
-def test_empty_position_reads_as_need(world) -> None:
+def test_programs_with_nobody_at_his_position_are_skipped(world) -> None:
+    """Synthetic rosters can leave a program with no PG; that's an artifact, not a need."""
     scored, pt = world
     row = scored[scored.player_id == "P0161"].iloc[0]
-    all_fits = best_fits(row, scored, pt, n=30)
     d1 = scored[scored.division == "D1"]
     empty = set(d1.school) - set(d1.loc[d1.position == "PG", "school"])
-    for f in all_fits:
-        if f["school"] in empty:
-            assert f["need"] == 100.0 and f["reason"].startswith("No PG on the roster")
+    assert empty  # the test only means something if such programs exist
+    names = {f["school"] for f in best_fits(row, scored, pt, n=30)}
+    assert not names & empty
+    assert all("on the roster" not in f["reason"] for f in best_fits(row, scored, pt, n=30))
 
 
 def test_fits_work_without_play_types(world) -> None:

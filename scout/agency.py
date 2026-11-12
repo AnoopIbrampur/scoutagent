@@ -73,6 +73,10 @@ def best_fits(row: pd.Series, scored: pd.DataFrame, playtypes_offense: pd.DataFr
     out = []
     for school, roster in d1.groupby("school"):
         at_pos = roster[roster["position"] == pos]
+        if at_pos.empty:
+            # No real D1 program has no one at a position; in the synthetic data this only means
+            # positions were dealt out at random, so it isn't a need signal. Skip it.
+            continue
         minutes = float(at_pos["minutes_pg"].sum())
         seniors = at_pos[at_pos["class_year"] == "SR"]
         opening = float(seniors["minutes_pg"].sum()) / minutes if minutes else 1.0
@@ -114,9 +118,7 @@ def best_fits(row: pd.Series, scored: pd.DataFrame, playtypes_offense: pd.DataFr
 def _fit_reason(f: pd.Series, pos: str, me: float, top_type: str | None) -> str:
     """One plain sentence built only from numbers in the fit row (so the fact-check can verify it)."""
     parts = []
-    if f["at_position"] == 0:
-        parts.append(f"no {pos} on the roster")
-    elif f["seniors_leaving"]:
+    if f["seniors_leaving"]:
         s = "s" if f["seniors_leaving"] != 1 else ""
         parts.append(f"{f['seniors_leaving']} senior{s} leaving at {pos} ({100 * f['opening_share']:.0f}% of {pos} minutes)")
     if f["at_position"] and pd.isna(f["best_returning_translation"]):

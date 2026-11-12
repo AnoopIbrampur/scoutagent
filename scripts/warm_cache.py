@@ -10,18 +10,17 @@ from __future__ import annotations
 import sys
 
 from scout.query_parser import SearchFilters
-from scout.report import generate_report
-from scout.search import DuckDBSearchBackend
+from scout.service import ScoutService
 
 
 def main(n: int = 25) -> None:
     """Generate (or confirm cached) reports for the top-n underrated players."""
-    backend = DuckDBSearchBackend()
-    results = backend.search(SearchFilters(), limit=n)["results"]
+    svc = ScoutService()  # same path the app uses, so the app finds these reports in the cache
+    results = svc.backend.search(SearchFilters(), limit=n)["results"]
     for r in results:
-        rep = generate_report(backend.get_player(r["player_id"]), playtypes=backend.playtype_summary(r["player_id"]))
-        status = "cached" if rep.cached else f"new ({rep.method})"
-        flag = f"  FLAGGED {rep.flagged_numbers}" if rep.flagged_numbers else ""
+        rep = svc.report(r["player_id"])
+        status = "cached" if rep["cached"] else f"new ({rep['method']})"
+        flag = f"  FLAGGED {rep['flagged_numbers']}" if rep["flagged_numbers"] else ""
         print(f"{r['player_id']} {r['name']:20s} {status}{flag}")
 
 
