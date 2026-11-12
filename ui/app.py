@@ -236,8 +236,9 @@ def pick_example() -> None:
 st.markdown(
     "<p class='sa-overline'>ScoutAgent</p>"
     "<h1 class='sa-display'>Find the players attention missed.</h1>"
-    "<p class='sa-lede'>Describe who you need. ScoutAgent ranks small-school players by how well their "
-    "production should translate to D1, and how little anyone is watching.</p>",
+    "<p class='sa-lede'>Built for player representation. Describe who you need, and ScoutAgent finds "
+    "small-school players whose production should translate to D1, says whether to sign them, and shows "
+    "where they'd fit.</p>",
     unsafe_allow_html=True,
 )
 if dataset_name() == "real":
@@ -295,7 +296,8 @@ with left:
                 unsafe_allow_html=True)
     # Most important first: the scores sit next to the name, so they stay visible in a narrow list.
     table = pd.DataFrame([{
-        "Name": r["name"], "Underrated": r["underrated_score"], "Translation": r["translation_score"],
+        "Name": r["name"], "Call": r.get("call", ""), "Underrated": r["underrated_score"],
+        "Translation": r["translation_score"],
         "Level": f"{r['division']} · {r['position']}", "Ht": r["height"], "School": r["school"],
     } for r in res["results"]])
     event = st.dataframe(
@@ -303,6 +305,7 @@ with left:
         on_select="rerun", selection_mode="single-row", key=f"shortlist-{hash(st.session_state.query)}",
         column_config={  # fixed widths so the scores never scroll out of view
             "Name": st.column_config.TextColumn(width=128),
+            "Call": st.column_config.TextColumn(width=58, help="Representation call: Sign, Watch, or Pass"),
             "School": st.column_config.TextColumn(width=132),
             "Level": st.column_config.TextColumn(width=66),
             "Ht": st.column_config.TextColumn(width=50),
@@ -336,15 +339,21 @@ with right:
             unsafe_allow_html=True,
         )
 
+        ag = p.get("agency") or {}
+        if ag:
+            tone = {"Sign": "good", "Watch": "", "Pass": "warn"}[ag["call"]]
+            chips([(f"Call: {ag['call']}", tone), (ag["call_reason"], "")])
         m = st.columns(4)
         m[0].metric("Translation", f"{s['translation_score']:.1f}", help="Would his production hold up at D1? 0–100")
         m[1].metric("Underrated", fmt_score(s["underrated_score"]),
                     help=("No attention data for this player" if s["underrated_score"] is None else
-                          f"Translation {s['translation_score']:.1f} − Attention {s['attention_score']:.1f}, rescaled 0–100"))
-        m[2].metric("PPG", f"{raw['points_pg']:.1f}")
-        m[3].metric("TS%", f"{100 * der['ts_pct']:.1f}%")
+                          f"Translation {s['translation_score']:.1f} − Attention {s['attention_score']:.1f}, rescaled 0–100. "
+                          "Attention is recruiting stars and news coverage."))
+        m[2].metric("Marketability", fmt_score(s.get("marketability_score")),
+                    help="Social following as a percentile of all players: an NIL asset, kept out of Attention")
+        m[3].metric("PPG", f"{raw['points_pg']:.1f}")
 
-        sections = ["Overview", "Synergy", "Scouting report"] if p.get("synergy") else ["Overview", "Scouting report"]
+        sections = ["Overview", "Fit & leverage"] + (["Synergy"] if p.get("synergy") else []) + ["Scouting report"]
         view = st.segmented_control("Section", sections, default="Overview", key=f"view-{pid}",
                                     label_visibility="collapsed") or "Overview"
 
@@ -359,11 +368,12 @@ with right:
             st.caption("Percentile after the level adjustment; dashed line is the D1 average. "
                        "Blue bars count toward Translation; gray bars are context.")
 
-            box = st.columns(4)
+            box = st.columns(5)
             box[0].metric("RPG", f"{raw['rebounds_pg']:.1f}")
             box[1].metric("APG", f"{raw['assists_pg']:.1f}")
-            box[2].metric("AST/TO", f"{der['ast_to']:.2f}")
-            box[3].metric("3P%", f"{100 * raw['three_pct']:.1f}%" if raw["three_pct"] == raw["three_pct"] else "–",
+            box[2].metric("TS%", f"{100 * der['ts_pct']:.1f}%")
+            box[3].metric("AST/TO", f"{der['ast_to']:.2f}")
+            box[4].metric("3P%", f"{100 * raw['three_pct']:.1f}%" if raw["three_pct"] == raw["three_pct"] else "–",
                           help=f"{raw['three_att_pg']:.1f} attempts per game")
 
             notes = list(exp["notes"])
@@ -371,9 +381,39 @@ with right:
                 notes.append("Attention: none loaded (blank means unknown, not zero)")
             else:
                 f = lambda v: "?" if v is None else f"{v:,.0f}"  # noqa: E731
-                notes.append(f"Attention {s['attention_score']:.1f} from {f(raw['recruiting_stars'])}★, "
-                             f"{f(raw['social_followers'])} followers, {f(raw['news_mentions_90d'])} news mentions (90 days)")
+                notes.append(f"Attention {s['attention_score']:.1f} from {f(raw['recruiting_stars'])}★ and "
+                             f"{f(raw['news_mentions_90d'])} news mentions (90 days)")
+                notes.append(f"Marketability {fmt_score(s.get('marketability_score'))} from "
+                             f"{f(raw['social_followers'])} followers")
             st.caption(" · ".join(notes))
+
+        # ------------------------------------------------------------ fit & leverage
+        elif view == "Fit & leverage":
+            st.markdown("<p class='sa-section'>Leverage points</p>", unsafe_allow_html=True)
+            st.caption("What to lead with when talking to a program or a collective.")
+            if ag.get("leverage"):
+                st.markdown("<div class='sa-list'>" + "".join(
+                    f"<div class='sa-row'><div class='icon plus'>+</div><div><div class='what'>"
+                    f"{html.escape(lv.split(': ', 1)[0])}</div><div class='detail'>"
+                    f"{html.escape(lv.split(': ', 1)[1] if ': ' in lv else '')}</div></div></div>"
+                    for lv in ag["leverage"]) + "</div>", unsafe_allow_html=True)
+            else:
+                st.caption("No standout numbers to lead with yet.")
+
+            st.markdown("<p class='sa-section' style='margin-top:18px'>Best-fit destinations</p>",
+                        unsafe_allow_html=True)
+            fits = ag.get("fits") or []
+            if fits:
+                st.markdown("<div class='sa-list'>" + "".join(
+                    f"<div class='sa-row'><div class='icon sa-num'>{i}</div><div><div class='what'>"
+                    f"{html.escape(f['school'])} <span class='sa-label'>· {html.escape(f['conference'])} · "
+                    f"fit {f['fit']:.1f}</span></div><div class='detail'>{html.escape(f['reason'])}</div>"
+                    f"</div></div>" for i, f in enumerate(fits, 1)) + "</div>", unsafe_allow_html=True)
+                st.caption("Fit = 60% need at his position (senior minutes opening up, and whether he projects "
+                           "above their best returning player) + 40% style match (how closely the program's "
+                           "play-type mix matches his). Programs in this demo are synthetic.")
+            else:
+                st.caption("Ranking programs needs D1 roster data, which isn't loaded for this view.")
 
         # ------------------------------------------------------------ synergy
         elif view == "Synergy":
@@ -441,5 +481,6 @@ with right:
                 if rep["notes"]:
                     st.caption(" · ".join(rep["notes"]))
             else:
-                st.caption("Six sections: snapshot, strengths, weaknesses, D1 projection, archetype, "
-                           "and a Pursue / Monitor / Pass call. Every number is checked against his data.")
+                st.caption("Snapshot, strengths, weaknesses, D1 projection, archetype, leverage points, "
+                           "best-fit destinations, and a Sign / Watch / Pass call. Every number is checked "
+                           "against his data.")

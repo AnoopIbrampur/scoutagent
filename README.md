@@ -2,7 +2,7 @@
 
 A search tool for finding NCAA men's basketball players that recruiters overlook.
 
-You type something like "Find a D2 point guard who'd translate to D1, strong passer, under 6'3"." ScoutAgent turns that into filters and ranks the matches with two scores. Translation asks whether a player's production would hold up at D1. Underrated asks how much better he is than the attention he gets. Click a player and it writes a scouting report, then checks every number in the report against his data so the model can't make up a stat.
+You type something like "Find a D2 point guard who'd translate to D1, strong passer, under 6'3"." ScoutAgent turns that into filters and ranks the matches with two scores. Translation asks whether a player's production would hold up at D1. Underrated asks how much better he is than the attention he gets. Click a player to see whether an agency should sign him, which D1 programs he'd fit, and what numbers to lead with. It also writes a scouting report, then checks every number in the report against his data so the model can't make up a stat.
 
 The idea behind it is simple. Attention follows big programs, not performance, so good players at small schools get missed.
 
@@ -98,7 +98,7 @@ Every constant lives in `scout/config.py` (`SCORING_CONFIG` and `POSITION_WEIGHT
    - Players without Synergy data are scored on the box-score part alone.
    - Players with under 600 season minutes are pulled toward 40.
 
-4. **Attention (0 to 100).** A blend of percentiles: 40% recruiting stars, 35% log followers, 25% news mentions over 90 days.
+4. **Attention (0 to 100).** How much the recruiting world already knows about him: a blend of percentiles, 60% recruiting stars and 40% news mentions over 90 days. Social followers are left out on purpose. For an NIL-focused agency a following is something to sell, so it gets its own **Marketability** score (the follower percentile) instead of counting against him.
 
 5. **Underrated (0 to 100)** is `(Translation − Attention + 100) / 2`. A score of 50 means fairly rated.
 
@@ -106,7 +106,7 @@ Every constant lives in `scout/config.py` (`SCORING_CONFIG` and `POSITION_WEIGHT
 
 7. **Explanations.** The top three factors are ranked by `weight × (percentile − 50)`. The top concern is the weakest stat, turnover rate included.
 
-**What the validation shows.** All 15 planted gems rank in the top 50 (the target was 10), and with Synergy stats they all sit in the top 16. Box score alone left two at #18 and #29. Four of the 10 decoys still reach the top 50 with the gate on. This shows the pipeline is wired correctly and the adjustments push the right way. It doesn't show the weights are right. The gems were built with an efficiency edge, and the weights reward efficiency, so passing was always likely. Checking them properly takes real data on players who moved up a level, which is what the transfer check below is for.
+**What the validation shows.** All 15 planted gems rank in the top 50 (the target was 10), and all of them sit in the top 22. Three of the 10 decoys still reach the top 50, down from five before followers moved out of Attention. With only two coarse attention signals left (stars and news), many players share an attention score, which spreads the gems out a little more than before. This shows the pipeline is wired correctly and the adjustments push the right way. It doesn't show the weights are right. The gems were built with an efficiency edge, and the weights reward efficiency, so passing was always likely. Checking them properly takes real data on players who moved up a level, which is what the transfer check below is for.
 
 ## Checking the scoring against real transfers
 
@@ -147,6 +147,18 @@ The Overall export has no height, position, division, minutes or rebounds, so re
 Percentiles need D1 players to compare against, so real players are measured against the synthetic D1 pool until real D1 data is loaded. The UI, the explanations and the reports all say so.
 
 The Synergy ranks shown in the app are percentiles across all 600 synthetic players with no level adjustment, the way Synergy does it. Scoring uses its own level-adjusted D1 percentiles.
+
+## The agency view
+
+Each player also gets the view a representation agency needs, in `scout/agency.py`.
+
+- **Representation call: Sign, Watch or Pass.** Sign means Translation of at least 75 and Underrated of at least 65 (he should hold up at D1, and the market hasn't noticed). Watch means Translation of at least 55. Everything else is Pass. The thresholds live in `config.REPRESENTATION_RULES`. On the synthetic data that's 8 Signs, 171 Watches and 421 Passes out of 600.
+- **Best-fit destinations.** D1 programs ranked by fit: 60% need and 40% style. Need is half "minutes opening up" (the share of the program's minutes at his position held by seniors) and half "edge" (whether he projects above their best returning player at his position). Style is how closely the program's play-type mix matches his, scaled across programs. Each program comes with one plain reason, like "2 seniors leaving at PG (56% of PG minutes); projects above their best returning PG (Translation 62.3); runs P&R Ball Handler on 19.3% of possessions, his most-used play type."
+- **Leverage points.** His strongest stats against D1 players at his position (85th percentile and up), plus marketability when it's high: the numbers to lead with when talking to a program or a collective.
+
+Reports include all three as their own sections, and the fact-check covers them too.
+
+The programs in the demo are synthetic, so their rosters and styles are invented. The style ranking is only as good as the play-type data, which in the synthetic set comes from each roster's position mix. With real rosters and team Synergy exports, the same code ranks real destinations.
 
 ## UI design
 

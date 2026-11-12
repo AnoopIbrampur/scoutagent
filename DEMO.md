@@ -28,12 +28,14 @@ Say up front that the data is synthetic. The players, schools and stats are gene
 1. Darius Ellison (D2 PG, 6'1") is already open on the right as the top match.
 2. Under "Why this ranking": "A 4.62 assist-to-turnover ratio. Even after discounting for D2 competition, that's 99th percentile among D1 point guards."
 3. Point at the chart. "Each bar is a percentile against D1 players at his position, after the level adjustment. The dashed line is the D1 average." If there's time, open the Synergy tab to show points per possession and his play types.
-4. Switch to Scouting report and click Write scouting report. Scroll through it: snapshot, strengths, weaknesses, D1 projection, archetype, recommendation.
-5. Point at the green Fact-checked pill. "Every number in this report is checked against his data. If the model made up a stat, we'd catch it and ask for a rewrite."
+4. Point at the green "Call: Sign" pill under his name. "This is the representation call: he projects as a D1 contributor and nobody's watching yet."
+5. Open Fit & leverage. "Leverage points are what we'd lead with: a 4.62 assist-to-turnover ratio, better than 99% of D1 point guards. Best-fit destinations rank programs by minutes opening at his position and how close their style is to his. The top one loses two senior point guards and runs a lot of pick-and-roll."
+6. Switch to Scouting report and click Write scouting report. Scroll through it: snapshot, strengths, weaknesses, D1 projection, archetype, leverage points, destinations, and the Sign / Watch / Pass call.
+7. Point at the green Fact-checked pill. "Every number in this report is checked against his data. If the model made up a stat, we'd catch it and ask for a rewrite."
 
 ## 2:00 to 2:30. How the scoring works (30s)
 
-> "Three steps. First, we adjust for level. A D2 season counts for about 80% of a D1 season, scaled by how strong the conference is. Second, we turn those adjusted stats into percentiles against D1 players at the same position, weighted by what matters there: decision-making for guards, rebounding and rim protection for bigs. Third, we subtract an attention score built from stars, followers and news. To test it, we planted 15 hidden gems in the data. All 15 land in the top 50, and it was a fair test because the scoring never sees which players were planted."
+> "Three steps. First, we adjust for level. A D2 season counts for about 80% of a D1 season, scaled by how strong the conference is. Second, we turn those adjusted stats into percentiles against D1 players at the same position, weighted by what matters there: decision-making for guards, rebounding and rim protection for bigs. Third, we subtract an attention score built from recruiting stars and news coverage. Followers aren't in it: for an agency they're marketability, so they get their own score. To test it, we planted 15 hidden gems in the data. All 15 land in the top 50, and it was a fair test because the scoring never sees which players were planted."
 
 If someone pushes on that last point: the planted gems were built with an efficiency edge and the weights reward efficiency, so passing was always likely. It shows the pipeline works. It doesn't prove the weights are right, and say so before they do.
 

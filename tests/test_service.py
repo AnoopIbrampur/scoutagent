@@ -56,3 +56,13 @@ def test_concurrent_searches_are_safe(built) -> None:
     assert len(results) == len(queries) and all("results" in r for r in results)
     # Same query, same answer, regardless of what ran alongside it.
     assert results[0]["results"] == results[6]["results"]
+
+
+def test_player_and_search_carry_the_agency_view(built) -> None:
+    svc = ScoutService(db_path=built)
+    res = svc.search("D2 point guard who can pass", limit=5)
+    assert all(r["call"] in ("Sign", "Watch", "Pass") for r in res["results"])
+    ag = svc.player(res["results"][0]["player_id"])["agency"]
+    assert ag["call"] in ("Sign", "Watch", "Pass") and len(ag["fits"]) == 5 and "leverage" in ag
+    rep = svc.report(res["results"][0]["player_id"], force=True)
+    assert "## Best-Fit Destinations" in rep["markdown"] and rep["flagged_numbers"] == []
