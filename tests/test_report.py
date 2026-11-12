@@ -42,8 +42,13 @@ def test_template_passes_check_for_every_player(scored) -> None:
 
 
 def test_invented_numbers_are_flagged(facts) -> None:
-    md = "## Snapshot\nHe averaged 31.7 PPG and had 14 double-doubles."
-    assert check_numbers(md, facts) == ["31.7", "14"]
+    from scout.report import allowed_numbers
+    # Pick an integer that no value in this player's data rounds to, so the test doesn't
+    # depend on which player ranks first.
+    taken = {round(a) for a in allowed_numbers(facts)}
+    n = next(i for i in range(11, 99) if i not in taken)
+    md = f"## Snapshot\nHe averaged 31.7 PPG and had {n} double-doubles."
+    assert check_numbers(md, facts) == ["31.7", str(n)]
 
 
 def test_rounding_is_allowed(facts) -> None:
