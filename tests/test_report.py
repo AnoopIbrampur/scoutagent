@@ -81,7 +81,7 @@ def test_missing_sections_detected() -> None:
 def _good_llm_md(facts: dict) -> str:
     sc = facts["scores"]
     return "\n\n".join(f"## {s}\nTranslation {sc['translation']}." for s in SECTIONS[:-1]) + \
-        "\n\n## Recommendation\n**Pursue**: strong."
+        f"\n\n## {SECTIONS[-1]}\n**Sign**: strong."
 
 
 def test_no_key_uses_template_and_caches(row, tmp_path) -> None:

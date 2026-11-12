@@ -22,9 +22,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field
 
+from scout.agency import leverage_points, representation_call
 from scout.config import DB_PATH, SCOUT_MODEL, has_api_key
 from scout.db import get_connection
 from scout.llm import LLMError, complete
@@ -33,12 +35,12 @@ from scout.scoring import STAT_LABELS, explain_player
 
 log = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v4"  # bump to invalidate cached reports after prompt changes
+PROMPT_VERSION = "v5"  # bump to invalidate cached reports after prompt changes
 SECTIONS = [
     "Snapshot", "Strengths", "Weaknesses / Questions", "Projection at D1 Level",
-    "Comparable Player Archetype", "Recommendation",
+    "Comparable Player Archetype", "Leverage Points", "Best-Fit Destinations", "Representation Call",
 ]
-RECOMMENDATIONS = ("Pursue", "Monitor", "Pass")
+RECOMMENDATIONS = ("Sign", "Watch", "Pass")
 
 
 class ReportResult(BaseModel):
@@ -61,18 +63,17 @@ def _pct(x: float) -> str:
 
 
 def suggested_recommendation(translation: float, underrated: float | None) -> str:
-    """Rule of thumb shared by the template and the LLM prompt (unknown Underrated counts as met)."""
-    if translation >= 75 and (underrated is None or underrated >= 65):
-        return "Pursue"
-    if translation >= 55:
-        return "Monitor"
-    return "Pass"
+    """Sign / Watch / Pass rule of thumb shared by the template and the LLM prompt."""
+    return representation_call(translation, underrated)[0]
 
 
-def build_report_input(row: pd.Series, playtypes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def build_report_input(row: pd.Series, playtypes: list[dict[str, Any]] | None = None,
+                       agency: dict[str, Any] | None = None) -> dict[str, Any]:
     """Everything the report may cite, already rounded the way it should be quoted.
 
     playtypes: his most-used offensive play types (from SearchBackend.playtype_summary).
+    agency: {"fits": [...], "leverage": [...]} from ScoutService (destinations need the full
+            roster table, so they're computed there and passed in).
     """
     exp = explain_player(row)
     weighted = [f["stat"] for f in exp["top_factors"]] + [exp["top_concern"]["stat"]]
@@ -128,7 +129,15 @@ def build_report_input(row: pd.Series, playtypes: list[dict[str, Any]] | None = 
             "top_concern": exp["top_concern"]["text"],
             "notes": exp["notes"],
         },
+        "marketability": None if pd.isna(row.get("marketability_score", np.nan))
+        else round(float(row["marketability_score"]), 1),
+        "leverage_points": (agency or {}).get("leverage") or leverage_points(row, exp),
+        "best_fit_destinations": [
+            {k: f[k] for k in ("school", "conference", "fit", "need", "style", "reason")}
+            for f in (agency or {}).get("fits", [])
+        ] or None,
         "suggested_recommendation": suggested_recommendation(t, u),
+        "suggested_recommendation_reason": representation_call(t, u)[1],
     }
 
 
@@ -318,13 +327,12 @@ def template_report(facts: dict[str, Any], row: pd.Series) -> str:
     exp = explain_player(row)
     skill = _SKILL_OF_STAT.get(exp["top_factors"][0]["stat"], "other")
     archetype = _ARCHETYPES.get((p["position"], skill), _ARCHETYPES[(p["position"], "other")])
-    reason = {
-        "Pursue": (f"Translation {sc['translation']} with Underrated {sc['underrated']}: D1-level production the market has not priced in."
-                   if sc["underrated"] is not None else
-                   f"Translation {sc['translation']}: D1-level production; check how widely he is already known."),
-        "Monitor": f"Translation {sc['translation']} is D1-viable but not a lock; see him against his best opponents.",
-        "Pass": f"Translation {sc['translation']} does not project to a D1 rotation role yet.",
-    }[rec]
+    scores = f"Translation {sc['translation']}" + (f", Underrated {sc['underrated']}" if sc["underrated"] is not None else "")
+    reason = f"{scores}. {facts['suggested_recommendation_reason']}"
+    leverage = [f"- {lv}" for lv in facts["leverage_points"]] or ["- No standout numbers to lead with yet."]
+    fits = facts.get("best_fit_destinations")
+    destinations = ([f"- **{f['school']}** ({f['conference']}, fit {f['fit']}): {f['reason']}" for f in fits]
+                    if fits else ["- Ranking programs needs D1 roster data, which isn't loaded for this view."])
     weaknesses = [f"- {e['top_concern']}"] + [f"- {n}" for n in e["notes"] if n.startswith("Small sample")]
     if att["recruiting_stars"] is None or att["news_mentions_90d"] is None:
         weaknesses.append("- Question: no attention data loaded, so how widely he is already known is "
@@ -373,13 +381,20 @@ def template_report(facts: dict[str, Any], row: pd.Series) -> str:
         "## Comparable Player Archetype",
         f"{archetype}.",
         "",
-        "## Recommendation",
+        "## Leverage Points",
+        *leverage,
+        "",
+        "## Best-Fit Destinations",
+        *destinations,
+        "",
+        "## Representation Call",
         f"**{rec}**: {reason}",
     ])
 
 
-REPORT_SYSTEM = f"""You are a veteran college basketball scout writing for a D1 coaching staff. \
-You write tight, specific, professional scouting reports.
+REPORT_SYSTEM = f"""You are a veteran basketball scout writing prospect profiles for a player \
+representation agency deciding whether to represent a player and where he would fit. You write \
+tight, specific, professional reports.
 
 Write the report in Markdown with exactly these level-2 headers, in this order:
 {chr(10).join('## ' + s for s in SECTIONS)}
@@ -400,7 +415,11 @@ efficient each is).
 - Judge him only against the D1 percentiles provided. Do not compare him to other prospects, his conference, or any list or ranking you were not given.
 - Write numbers as digits. Do not compute fractions or multiples ("a third", "twice").
 - Comparable Player Archetype: describe a player TYPE. Never name a real player.
-- Recommendation: start with **Pursue**, **Monitor**, or **Pass**, then one line of reasoning. \
+- Leverage Points: 2-4 bullets built from leverage_points, the numbers to lead with when \
+talking to a program or a collective. Marketability, if present, is an NIL asset.
+- Best-Fit Destinations: one bullet per program in best_fit_destinations, in the order given, \
+using its reason. If it is missing, say program fit needs roster data.
+- Representation Call: start with **Sign**, **Watch**, or **Pass**, then one line of reasoning. \
 suggested_recommendation is a rule of thumb; you may disagree if the data supports it.
 - Under 350 words. No preamble before the first header."""
 
@@ -470,9 +489,10 @@ def describe_problems(checks: dict[str, list[str]]) -> str:
 
 
 def generate_report(row: pd.Series, force: bool = False, db_path: Path | str = DB_PATH,
-                    use_llm: bool | None = None, playtypes: list[dict[str, Any]] | None = None) -> ReportResult:
+                    use_llm: bool | None = None, playtypes: list[dict[str, Any]] | None = None,
+                    agency: dict[str, Any] | None = None) -> ReportResult:
     """Return a cached report or generate a new one (LLM if available, else template)."""
-    facts = build_report_input(row, playtypes)
+    facts = build_report_input(row, playtypes, agency)
     ihash = input_hash(facts)
     use_llm = has_api_key() if use_llm is None else use_llm
     pid = str(row["player_id"])

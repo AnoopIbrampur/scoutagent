@@ -16,6 +16,7 @@ from typing import Any
 import duckdb
 
 from scout.config import DB_PATH, POSITION_WEIGHTS, SCOUT_MODEL, has_api_key
+from scout.agency import best_fits, leverage_points, program_styles, representation_call
 from scout.query_parser import parse_query
 from scout.report import generate_report
 from scout.scoring import STAT_LABELS, explain_player
@@ -70,6 +71,10 @@ class ScoutService:
         # (one database file) each run one at a time. Both take milliseconds.
         self._search_lock = threading.Lock()
         self._report_lock = threading.Lock()
+        pt = getattr(self.backend, "playtypes", {}).get("playtypes_offense")
+        self._playtypes_offense = pt
+        # D1 program styles only depend on the dataset, so compute them once.
+        self._styles = program_styles(self.backend.scored, pt) if pt is not None and not pt.empty else None
 
     def health(self) -> dict[str, Any]:
         return {"status": "ok", "players": len(self.backend.scored),
@@ -90,6 +95,14 @@ class ScoutService:
             raise UnknownPlayer(player_id)
         return row
 
+    def agency(self, row) -> dict[str, Any]:
+        """Representation call, best-fit D1 destinations, and leverage points for one player."""
+        exp = explain_player(row)
+        underrated = None if row["underrated_score"] != row["underrated_score"] else float(row["underrated_score"])
+        call, why = representation_call(float(row["translation_score"]), underrated)
+        fits = best_fits(row, self.backend.scored, self._playtypes_offense, self._styles)
+        return {"call": call, "call_reason": why, "fits": fits, "leverage": leverage_points(row, exp)}
+
     def player(self, player_id: str) -> dict[str, Any]:
         row = self._row(player_id)
         chart = [{"stat": s, "label": STAT_LABELS[s], "percentile": round(float(row[f"pct_{s}"]), 1),
@@ -105,10 +118,13 @@ class ScoutService:
             "percentiles_vs_d1_position": chart,
             "explanation": explain_player(row),
             "synergy": self.backend.get_synergy(player_id),
+            "agency": self.agency(row),
         }
 
     def report(self, player_id: str, force: bool = False) -> dict[str, Any]:
         row = self._row(player_id)
         playtypes = self.backend.playtype_summary(player_id)
+        agency = self.agency(row)
         with self._report_lock:
-            return generate_report(row, force=force, db_path=self.db_path, playtypes=playtypes).model_dump()
+            return generate_report(row, force=force, db_path=self.db_path, playtypes=playtypes,
+                                   agency=agency).model_dump()

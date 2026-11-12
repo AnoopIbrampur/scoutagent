@@ -28,6 +28,7 @@ import os
 from scout.config import DB_PATH, SCORING_CONFIG
 from scout.db import fetch_playtypes, fetch_players, fetch_real_players, fetch_synergy, get_connection
 from scout.query_parser import SearchFilters, inches_to_str
+from scout.agency import representation_call
 from scout.scoring import explain_player, score_players
 from scout.synergy import STAT_KEYS, attach_synergy, top_playtypes
 
@@ -192,6 +193,8 @@ class DuckDBSearchBackend(SearchBackend):
                 rank_score=to_python(round(float(row["rank_score"]), 1)),
                 emphasis_score=None if pd.isna(row["emphasis_score"]) else round(float(row["emphasis_score"]), 1),
                 top_factor=exp["top_factors"][0]["text"],
+                call=representation_call(float(row["translation_score"]),
+                                         None if pd.isna(row["underrated_score"]) else float(row["underrated_score"]))[0],
                 explanation=exp,
             )
             results.append(item)
